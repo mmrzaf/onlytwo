@@ -1,0 +1,223 @@
+version: 1
+root: .
+name: onlytwo
+default_profile: full
+
+output:
+  dir: /home/darius/tmp/
+  pattern: onlytwo_{profile}_{ts}_{gitsha}.md
+  latest: ""
+  stdout_default: false
+
+render:
+  format: md
+  newline: |4+
+  code_fences: true
+  include_tree: true
+  tree_depth: 5
+  include_manifest: true
+  manifest:
+    group_by_slice: true
+    include_line_counts: true
+    include_byte_counts: true
+    include_truncation_notes: true
+    include_unreadable_notes: true
+  file_block:
+    header: <<<FILE:{path}>>>
+    footer: ""
+
+budgets:
+  max_chars: 160000
+  per_file_max_lines: 600
+  per_file_max_bytes: 262144
+  drop_policy: drop_low_priority
+
+ignore:
+  use_gitignore: true
+  always:
+    - .git/**
+    - node_modules/**
+    - dist/**
+    - build/**
+    - .venv/**
+    - .pytest_cache/**
+    - coverage/**
+    - target/**
+    - .snip/**
+  binary_extensions:
+    - .png
+    - .jpg
+    - .jpeg
+    - .gif
+    - .pdf
+    - .zip
+    - .tar
+    - .gz
+    - .7z
+    - .exe
+    - .dll
+    - .so
+    - .dylib
+
+sensitive:
+  exclude_globs:
+    - .env*
+    - "**/*secret*"
+    - "**/*secrets*"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/id_rsa*"
+    - "**/*serviceAccount*.json"
+
+###############################################################################
+# SLICES BASED ON REAL LLM WORKFLOWS
+###############################################################################
+
+slices:
+  backend:
+    include:
+      - cmd/**.go
+      - internal/**.go
+    priority: 100
+
+  protocol:
+    include:
+      - client/src/crypto/**.ts
+      - client/src/transport/**.ts
+      - client/src/workers/cryptoWorker.ts
+      - internal/ws/**.go
+      - internal/session/**.go
+    priority: 95
+
+  frontend:
+    include:
+      - client/src/**.ts
+      - client/index.html
+      - client/package.json
+    exclude:
+      - client/src/crypto/**
+      - client/src/transport/**
+      - client/src/workers/**
+      - client/package-lock.json
+
+    priority: 70
+
+  ui:
+    include:
+      - client/src/ui/**.ts
+      - client/src/style.css
+    priority: 65
+
+  state:
+    include:
+      - client/src/state/**.ts
+    priority: 60
+
+  workers:
+    include:
+      - client/src/workers/**.ts
+    priority: 55
+
+  config:
+    include:
+      - "**/*.json"
+      - "**/*.yaml"
+      - "**/*.yml"
+      - "**/*.toml"
+      - tsconfig.json
+      - vite.config.ts
+    exclude:
+      - client/package-lock.json
+    priority: 40
+
+  http:
+    include:
+      - internal/http/**.go
+    priority: 35
+
+  infra:
+    include:
+      - Dockerfile*
+      - docker-compose*
+    priority: 20
+
+  tests:
+    include:
+      - "**/*_test.go"
+    priority: 45
+
+  docs:
+    include:
+      - README.md
+      - BLUEPRINT.md
+    priority: 15
+
+  misc:
+    include: []
+    exclude: []
+    priority: 1
+
+###############################################################################
+# PROFILES: Designed for REAL USAGE SCENARIOS
+###############################################################################
+
+profiles:
+  backend:
+    enable: [backend, config, http]
+    budgets:
+      max_chars: 160000
+
+  frontend:
+    enable: [frontend, ui, state, config, workers]
+    budgets:
+      max_chars: 160000
+
+  protocol:
+    enable: [protocol, config]
+    budgets:
+      max_chars: 160000
+
+  fullstack:
+    enable:
+      - backend
+      - protocol
+      - frontend
+      - ui
+      - state
+      - config
+    budgets:
+      max_chars: 220000
+    render:
+      tree_depth: 6
+
+  ui-only:
+    enable: [ui, state, frontend, config]
+    budgets:
+      max_chars: 100000
+
+  security-audit:
+    enable: [protocol, backend, config]
+    budgets:
+      max_chars: 200000
+
+  infra:
+    enable: [infra, config]
+    budgets:
+      max_chars: 80000
+
+  full:
+    enable:
+      - backend
+      - frontend
+      - protocol
+      - ui
+      - state
+      - workers
+      - config
+      - http
+      - infra
+      - docs
+    budgets:
+      max_chars: 300000
+    render:
+      tree_depth: 6
