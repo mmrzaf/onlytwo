@@ -54,7 +54,7 @@ export class CryptoClient {
   async encryptMessage(
     text: string,
   ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; counter: bigint }> {
-    return this.request("ENCRYPT", text);
+    return this.request("ENCRYPT_TEXT", text);
   }
 
   async decryptMessage(
@@ -62,9 +62,21 @@ export class CryptoClient {
     nonce: Uint8Array,
     counter: bigint,
   ): Promise<string> {
-    return this.request("DECRYPT", { ciphertext, nonce, counter });
+    return this.request("DECRYPT_TEXT", { ciphertext, nonce, counter });
+  }
+  async encryptBinary(
+    data: Uint8Array,
+  ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; counter: bigint }> {
+    return this.request("ENCRYPT_BINARY", data);
   }
 
+  async decryptBinary(
+    ciphertext: Uint8Array,
+    nonce: Uint8Array,
+    counter: bigint,
+  ): Promise<Uint8Array> {
+    return this.request("DECRYPT_BINARY", { ciphertext, nonce, counter });
+  }
   async reset(): Promise<void> {
     return this.request("RESET");
   }

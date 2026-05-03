@@ -19,7 +19,9 @@ export class WsClient {
       this.disconnect();
       this.notifyStatus("connecting");
 
-      const wsUrl = `ws://localhost:8080/ws?code=${encodeURIComponent(code)}`;
+      const loc = window.location;
+      const protocol = loc.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${loc.host}/ws?code=${encodeURIComponent(code)}`;
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = "arraybuffer"; // STRICT BINARY ENFORCEMENT
 

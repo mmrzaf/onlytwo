@@ -21,7 +21,9 @@ async function init() {
 }
 
 function hashRatchet(key: Uint8Array): Uint8Array {
-  return libsodium.crypto_generichash(32, key, null);
+  const newKey = libsodium.crypto_generichash(32, key, null);
+  libsodium.memzero(key);
+  return newKey;
 }
 
 self.onmessage = async (e) => {
@@ -93,7 +95,7 @@ self.onmessage = async (e) => {
         break;
       }
 
-      case "ENCRYPT": {
+      case "ENCRYPT_TEXT": {
         if (!sessionKeyTx) throw new Error("No TX session key");
 
         const nonce = libsodium.randombytes_buf(24);
@@ -113,7 +115,7 @@ self.onmessage = async (e) => {
         break;
       }
 
-      case "DECRYPT": {
+      case "DECRYPT_TEXT": {
         if (!sessionKeyRx) throw new Error("No RX session key");
 
         const { ciphertext, nonce, counter } = payload;
@@ -145,8 +147,59 @@ self.onmessage = async (e) => {
         self.postMessage({ id, result: plaintext });
         break;
       }
+      case "ENCRYPT_BINARY": {
+        if (!sessionKeyTx) throw new Error("No TX session key");
+
+        const nonce = libsodium.randombytes_buf(24);
+        const counter = ++txCounter;
+        const messageBytes = payload; // ALREADY A Uint8Array
+
+        const ciphertext = libsodium.crypto_secretbox_easy(
+          messageBytes,
+          nonce,
+          sessionKeyTx,
+        );
+
+        sessionKeyTx = hashRatchet(sessionKeyTx);
+        self.postMessage({ id, result: { ciphertext, nonce, counter } });
+        break;
+      }
+
+      case "DECRYPT_BINARY": {
+        if (!sessionKeyRx) throw new Error("No RX session key");
+
+        const { ciphertext, nonce, counter } = payload;
+
+        if (counter <= rxCounter) {
+          throw new Error(`Replay attack: ${counter} <= ${rxCounter}`);
+        }
+
+        while (rxCounter < counter - 1n) {
+          sessionKeyRx = hashRatchet(sessionKeyRx);
+          rxCounter++;
+        }
+
+        const plaintextBytes = libsodium.crypto_secretbox_open_easy(
+          ciphertext,
+          nonce,
+          sessionKeyRx,
+        );
+
+        sessionKeyRx = hashRatchet(sessionKeyRx);
+        rxCounter = counter;
+
+        // RETURN RAW BYTES, DO NOT DECODE TO STRING
+        self.postMessage({ id, result: plaintextBytes });
+        break;
+      }
 
       case "RESET": {
+        if (myKeyPair && myKeyPair.privateKey) {
+          libsodium.memzero(myKeyPair.privateKey);
+        }
+        if (sessionKeyTx) libsodium.memzero(sessionKeyTx);
+        if (sessionKeyRx) libsodium.memzero(sessionKeyRx);
+
         myKeyPair = null;
         sessionKeyTx = null;
         sessionKeyRx = null;

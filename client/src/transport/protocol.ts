@@ -43,6 +43,9 @@ export function unpackEnvelope(buffer: ArrayBuffer): MessageEnvelope {
   if (buffer.byteLength < HEADER_SIZE) {
     throw new Error("Invalid packet: smaller than header size");
   }
+  if (buffer.byteLength > 100 * 1024 * 1024) {
+    throw new Error("Invalid packet: Payload exceeds maximum safe size");
+  }
 
   const view = new DataView(buffer);
   const type = view.getUint8(0);
