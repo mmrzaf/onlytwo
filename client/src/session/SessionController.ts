@@ -119,7 +119,7 @@ export class SessionController {
   async sendFile(file: File): Promise<void> {
     if (this.state.phase !== "chatting") return;
 
-    const CHUNK_SIZE = 64 * 1024; // 64 KiB
+    const CHUNK_SIZE = 65501;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
     await this.sendMessage(
