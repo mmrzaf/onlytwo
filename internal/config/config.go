@@ -1,27 +1,33 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"time"
+)
 
 type Config struct {
-	Port       string
-	StaticDir  string
-	SessionTTL int64 // seconds
+	Port            string
+	SessionTTL      int64
+	CleanupInterval time.Duration
 }
 
 func Load() Config {
-	port := os.Getenv("ONLYTWO_PORT")
-	if port == "" {
-		port = "8080"
+	cfg := Config{
+		Port:            ":8080",
+		SessionTTL:      24 * 60 * 60,
+		CleanupInterval: 5 * time.Minute,
 	}
 
-	staticDir := os.Getenv("ONLYTWO_STATIC_DIR")
-	if staticDir == "" {
-		staticDir = "client/dist"
+	if v := os.Getenv("PORT"); v != "" {
+		cfg.Port = ":" + v
 	}
 
-	return Config{
-		Port:       port,
-		StaticDir:  staticDir,
-		SessionTTL: 24 * 60 * 60, // 24h
+	if v := os.Getenv("SESSION_TTL"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.SessionTTL = n
+		}
 	}
+
+	return cfg
 }
