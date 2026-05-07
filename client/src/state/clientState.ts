@@ -2,6 +2,7 @@ export type ClientPhase =
   | "idle"
   | "disconnected"
   | "connecting"
+  | "reconnecting"
   | "handshaking"
   | "session_ready"
   | "chatting";
@@ -10,12 +11,10 @@ export type ClientState = {
   phase: ClientPhase;
   lastError: string | null;
 
-  // crypto-related info
   identityKeyReady: boolean;
   handshakeComplete: boolean;
   fingerprintPhrase: string | null;
 
-  // connection information
   sessionCode: string;
   participantCount: number;
 };
