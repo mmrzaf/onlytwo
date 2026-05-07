@@ -11,6 +11,9 @@ import (
 //go:embed client/dist/*
 var staticFiles embed.FS
 
+// NewStaticHandler serves the embedded Vite build.
+// Any path that doesn't resolve to a real file falls back to index.html,
+// enabling client-side routing.
 func NewStaticHandler() http.Handler {
 	subFS, err := fs.Sub(staticFiles, "client/dist")
 	if err != nil {
@@ -19,20 +22,18 @@ func NewStaticHandler() http.Handler {
 	fileServer := http.FileServer(http.FS(subFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if strings.HasPrefix(path, "/") {
-			path = path[1:]
-		}
+		path := strings.TrimPrefix(r.URL.Path, "/")
 
+		// Try to open the exact file first.
 		if f, err := subFS.Open(path); err == nil {
 			defer f.Close()
-			stat, err := f.Stat()
-			if err == nil && !stat.IsDir() {
+			if stat, err := f.Stat(); err == nil && !stat.IsDir() {
 				fileServer.ServeHTTP(w, r)
 				return
 			}
 		}
 
+		// Fall back to index.html for SPA routing.
 		indexFile, err := subFS.Open("index.html")
 		if err != nil {
 			http.Error(w, "index.html not found", http.StatusInternalServerError)
@@ -47,6 +48,6 @@ func NewStaticHandler() http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
+		_, _ = w.Write(data)
 	})
 }
