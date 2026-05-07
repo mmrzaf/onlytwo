@@ -2,7 +2,6 @@ import "./style.css";
 import { WsClient } from "./transport/wsClient";
 import { createClientState } from "./state/clientState";
 import { SessionController } from "./session/SessionController";
-import { cryptoClient } from "./crypto/keys";
 
 import { createAppDom } from "./ui/dom";
 import { MessageStore } from "./ui/messages";
@@ -67,7 +66,7 @@ const sessionCtrl = new SessionController(ws, state, {
       }
     });
   },
-  onDecryptionError: (msg) => {
+  onDecryptionError: (_msg) => {
     messageStore.add({
       text: `A message from your peer could not be decrypted (tampered or replay).`,
       timestamp: Date.now(),
