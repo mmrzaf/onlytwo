@@ -2,7 +2,7 @@ set shell := ["bash", "-cu"]
 
 # Build client then start server in dev mode
 dev:
-    cd client && npm install && npm run build && cd ..
+    cd client && npm run build && cd ..
     go run ./cmd/onlytwo-server
 
 # Build client only
