@@ -1,0 +1,90 @@
+##############################
+# OS / Editor / IDE ignores
+##############################
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+##############################
+# Go backend
+##############################
+
+# Go build artifacts
+/bin
+/build/bin
+/build/out
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go module cache (don't ignore go.sum)
+vendor/
+*.test
+
+# If 'build/' contains generated binaries or deploy artifacts
+build/deploy/*.tar.gz
+build/deploy/*.zip
+build/deploy/*.log
+
+##############################
+# Logs
+##############################
+*.log
+logs/
+*.out
+
+##############################
+# Client (Node + Vite + TypeScript)
+##############################
+
+client/node_modules/
+client/dist/
+client/.vite/
+client/.cache/
+client/.parcel-cache/
+client/.eslintcache
+
+# Yarn / npm files
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+##############################
+# Environment / credentials
+##############################
+
+.env
+.env.*
+!.env.example
+
+##############################
+# Build / Docker intermediates
+##############################
+
+build/docker/*.img
+build/scripts/*.tmp
+
+##############################
+# Misc
+##############################
+
+# snip YAML cache or lock files (optional)
+.snip.yaml.lock
+
+# Temporary
+tmp/
+*.tmp
+
