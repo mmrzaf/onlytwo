@@ -1,5 +1,11 @@
-// | Type (1) | Counter (8) | Timestamp (8) | Nonce (24) | Ciphertext (variable) |
-export const HEADER_SIZE = 41;
+/**
+ *
+ * Layout: | Type (1) | Counter (8) | Timestamp (8) | Nonce (12) | Ciphertext (var) |
+ *
+ */
+
+export const NONCE_SIZE = 12; // AES-GCM IV
+export const HEADER_SIZE = 29; // 1 + 8 + 8 + 12
 
 export enum MessageType {
   TEXT = 0x01,
@@ -17,48 +23,41 @@ export interface MessageEnvelope {
 }
 
 export function packEnvelope(env: MessageEnvelope): Uint8Array {
-  const buffer = new ArrayBuffer(HEADER_SIZE + env.payload.length);
-  const view = new DataView(buffer);
-  const uint8View = new Uint8Array(buffer);
+  const buf = new ArrayBuffer(HEADER_SIZE + env.payload.length);
+  const view = new DataView(buf);
+  const u8 = new Uint8Array(buf);
 
-  // 1. Type (1 byte)
   view.setUint8(0, env.type);
-
-  // 2. Counter (8 bytes) - Big Endian
   view.setBigUint64(1, env.counter, false);
-
-  // 3. Timestamp (8 bytes) - Big Endian
   view.setBigUint64(9, env.timestamp, false);
+  u8.set(env.nonce, 17);
+  u8.set(env.payload, HEADER_SIZE);
 
-  // 4. Nonce (24 bytes)
-  uint8View.set(env.nonce, 17);
-
-  // 5. Payload / Ciphertext (Variable)
-  uint8View.set(env.payload, HEADER_SIZE);
-
-  return uint8View;
+  return u8;
 }
 
 export function unpackEnvelope(buffer: ArrayBuffer): MessageEnvelope {
   if (buffer.byteLength < HEADER_SIZE) {
-    throw new Error("Invalid packet: smaller than header size");
+    throw new Error(
+      `Packet too small: ${buffer.byteLength} < ${HEADER_SIZE} bytes`,
+    );
   }
   if (buffer.byteLength > 100 * 1024 * 1024) {
-    throw new Error("Invalid packet: Payload exceeds maximum safe size");
+    throw new Error(`Packet too large: ${buffer.byteLength} bytes — rejected`);
   }
 
   const view = new DataView(buffer);
-  const type = view.getUint8(0);
+
+  const type = view.getUint8(0) as MessageType;
   const counter = view.getBigUint64(1, false);
   const timestamp = view.getBigUint64(9, false);
 
-  const nonce = new Uint8Array(buffer, 17, 24);
-  const payload = new Uint8Array(buffer, HEADER_SIZE);
+  const nonce = new Uint8Array(buffer.slice(17, 17 + NONCE_SIZE));
+  const payload = new Uint8Array(buffer.slice(HEADER_SIZE));
 
   return { type, counter, timestamp, nonce, payload };
 }
 
-// Utility to create empty nonces for unencrypted system/handshake messages
 export function createEmptyNonce(): Uint8Array {
-  return new Uint8Array(24);
+  return new Uint8Array(NONCE_SIZE);
 }
