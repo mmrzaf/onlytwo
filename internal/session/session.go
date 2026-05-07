@@ -5,19 +5,18 @@ import (
 	"time"
 )
 
-// Session represents a two-party relay session.
-// It is identified by a human-readable session code (e.g. AX72-FE9K).
+// Session represents a two-party relay session identified by a session code.
 type Session struct {
 	Code      string
 	CreatedAt time.Time
 	ExpiresAt time.Time
 
 	mu    sync.RWMutex
-	conns map[string]ConnEndpoint // connectionID -> endpoint
+	conns map[string]ConnEndpoint // max 2
 }
 
-// ConnEndpoint is the interface the ws layer must implement to allow
-// sending raw binary frames to the peer.
+// ConnEndpoint is the interface the ws layer must satisfy so the session
+// can deliver messages to a peer without knowing anything about WebSocket.
 type ConnEndpoint interface {
 	ID() string
 	Send(msg []byte) error
@@ -35,13 +34,13 @@ func NewSession(code string, ttlSeconds int64) *Session {
 	}
 }
 
-// IsExpired checks whether the session should be cleaned up.
+// IsExpired reports whether this session has passed its TTL.
 func (s *Session) IsExpired() bool {
 	return time.Now().UTC().After(s.ExpiresAt)
 }
 
-// AddConnection adds a connection to the session.
-// Returns error if there are already 2 participants.
+// AddConnection attaches a connection to the session.
+// Returns ErrSessionFull if there are already 2 participants.
 func (s *Session) AddConnection(conn ConnEndpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,21 +52,18 @@ func (s *Session) AddConnection(conn ConnEndpoint) error {
 	return nil
 }
 
-// RemoveConnection removes a connection from the session.
+// RemoveConnection detaches a connection from the session.
 func (s *Session) RemoveConnection(connID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.conns, connID)
 }
 
-// PeerOf returns the "other" connection in the session, if any.
+// PeerOf returns the other connection in the session, or nil if there is none.
 func (s *Session) PeerOf(connID string) ConnEndpoint {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if len(s.conns) < 2 {
-		return nil
-	}
 	for id, c := range s.conns {
 		if id != connID {
 			return c
@@ -76,7 +72,7 @@ func (s *Session) PeerOf(connID string) ConnEndpoint {
 	return nil
 }
 
-// HasConnections returns whether session still has any live connections.
+// HasConnections reports whether at least one connection is still attached.
 func (s *Session) HasConnections() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
