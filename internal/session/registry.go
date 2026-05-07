@@ -25,41 +25,41 @@ func NewRegistry(ttlSeconds int64) *Registry {
 	}
 }
 
-// GetOrCreateSession returns an existing non-expired session or creates a new one.
+// GetOrCreateSession returns an existing, non-expired session for the given
+// code, or creates a new one if none exists (or the existing one is expired).
 func (r *Registry) GetOrCreateSession(code string) *Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	s, ok := r.sessions[code]
-	if ok && !s.IsExpired() {
+	if s, ok := r.sessions[code]; ok && !s.IsExpired() {
 		return s
 	}
-
-	s = NewSession(code, r.ttl)
+	s := NewSession(code, r.ttl)
 	r.sessions[code] = s
 	return s
 }
 
-// GetSession returns session if exists and not expired.
+// GetSession returns the session for code if it exists and has not expired.
 func (r *Registry) GetSession(code string) (*Session, bool) {
 	r.mu.RLock()
 	s, ok := r.sessions[code]
 	r.mu.RUnlock()
+
 	if !ok || s.IsExpired() {
 		return nil, false
 	}
 	return s, true
 }
 
-// RemoveSession removes a session from registry.
+// RemoveSession deletes a session from the registry.
 func (r *Registry) RemoveSession(code string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.sessions, code)
 }
 
-// CleanupExpired removes expired or empty sessions periodically.
-// Call this from a background goroutine.
+// CleanupExpired periodically removes sessions that have expired or are empty
+// past their TTL. Stops when stopCh is closed.
 func (r *Registry) CleanupExpired(interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -67,16 +67,21 @@ func (r *Registry) CleanupExpired(interval time.Duration, stopCh <-chan struct{}
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now().UTC()
-			r.mu.Lock()
-			for code, s := range r.sessions {
-				if s.IsExpired() || (!s.HasConnections() && now.After(s.ExpiresAt)) {
-					delete(r.sessions, code)
-				}
-			}
-			r.mu.Unlock()
+			r.sweepExpired()
 		case <-stopCh:
 			return
+		}
+	}
+}
+
+func (r *Registry) sweepExpired() {
+	now := time.Now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for code, s := range r.sessions {
+		if s.IsExpired() || (!s.HasConnections() && now.After(s.ExpiresAt)) {
+			delete(r.sessions, code)
 		}
 	}
 }
