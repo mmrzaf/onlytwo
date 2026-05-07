@@ -1,19 +1,28 @@
+const REQUEST_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 10_000;
+
 export class CryptoClient {
   private worker: Worker;
   private pendingRequests: Map<
     string,
-    { resolve: Function; reject: Function }
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
   > = new Map();
   private isReady = false;
-  private readyQueue: Function[] = [];
+  private readyQueue: Array<() => void> = [];
 
   constructor() {
     this.worker = new Worker(new URL("./cryptoWorker.ts", import.meta.url), {
       type: "module",
     });
 
-    this.worker.onmessage = (e) => {
-      const { type, id, result, error } = e.data;
+    this.worker.onmessage = (e: MessageEvent) => {
+      const { type, id, result, error } = e.data as {
+        type?: string;
+        id?: string;
+        result?: unknown;
+        error?: string;
+      };
+
       if (type === "READY") {
         this.isReady = true;
         this.readyQueue.forEach((cb) => cb());
@@ -21,36 +30,75 @@ export class CryptoClient {
         return;
       }
 
+      if (!id) return;
       const req = this.pendingRequests.get(id);
-      if (req) {
-        if (error) req.reject(new Error(error));
-        else req.resolve(result);
-        this.pendingRequests.delete(id);
-      }
+      if (!req) return;
+      this.pendingRequests.delete(id);
+
+      if (error) req.reject(new Error(error));
+      else req.resolve(result);
+    };
+
+    this.worker.onerror = (e: ErrorEvent) => {
+      console.error("[CryptoClient] Worker error:", e.message);
+      const err = new Error(`Crypto worker crashed: ${e.message}`);
+      for (const req of this.pendingRequests.values()) req.reject(err);
+      this.pendingRequests.clear();
     };
   }
 
-  private async request(type: string, payload?: any): Promise<any> {
-    if (!this.isReady) await new Promise((res) => this.readyQueue.push(res));
+  private waitForReady(): Promise<void> {
+    if (this.isReady) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Crypto worker did not become ready in time")),
+        READY_TIMEOUT_MS,
+      );
+      this.readyQueue.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
 
-    const id = Math.random().toString(36).substring(2);
-    return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject });
+  private async request<T>(type: string, payload?: unknown): Promise<T> {
+    await this.waitForReady();
+
+    const id = crypto.randomUUID();
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Crypto operation timed out: ${type}`));
+      }, REQUEST_TIMEOUT_MS);
+
+      this.pendingRequests.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v as T);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+
       this.worker.postMessage({ type, payload, id });
     });
   }
 
   async generateIdentity(): Promise<Uint8Array> {
-    return this.request("GENERATE_IDENTITY");
+    return this.request<Uint8Array>("GENERATE_IDENTITY");
   }
 
   async establishSession(
     peerPublicKey: Uint8Array,
   ): Promise<{ fingerprint: string }> {
-    return this.request("ESTABLISH_SESSION", peerPublicKey);
+    return this.request<{ fingerprint: string }>(
+      "ESTABLISH_SESSION",
+      peerPublicKey,
+    );
   }
 
-  // Returns exact components needed for Blueprint Section 8
   async encryptMessage(
     text: string,
   ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; counter: bigint }> {
@@ -64,6 +112,7 @@ export class CryptoClient {
   ): Promise<string> {
     return this.request("DECRYPT_TEXT", { ciphertext, nonce, counter });
   }
+
   async encryptBinary(
     data: Uint8Array,
   ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; counter: bigint }> {
@@ -77,6 +126,7 @@ export class CryptoClient {
   ): Promise<Uint8Array> {
     return this.request("DECRYPT_BINARY", { ciphertext, nonce, counter });
   }
+
   async reset(): Promise<void> {
     return this.request("RESET");
   }
