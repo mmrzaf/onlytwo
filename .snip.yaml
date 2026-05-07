@@ -69,25 +69,26 @@ sensitive:
     - "**/id_rsa*"
     - "**/*serviceAccount*.json"
 
-###############################################################################
-# SLICES BASED ON REAL LLM WORKFLOWS
-###############################################################################
-
 slices:
   backend:
     include:
       - cmd/**.go
       - internal/**.go
+      - static.go
     priority: 100
 
   protocol:
     include:
       - client/src/crypto/**.ts
       - client/src/transport/**.ts
-      - client/src/workers/cryptoWorker.ts
       - internal/ws/**.go
       - internal/session/**.go
     priority: 95
+
+  session:
+    include:
+      - client/src/session/**.ts
+    priority: 90
 
   frontend:
     include:
@@ -97,9 +98,9 @@ slices:
     exclude:
       - client/src/crypto/**
       - client/src/transport/**
+      - client/src/session/**
       - client/src/workers/**
       - client/package-lock.json
-
     priority: 70
 
   ui:
@@ -116,6 +117,7 @@ slices:
   workers:
     include:
       - client/src/workers/**.ts
+      - client/src/crypto/cryptoWorker.ts
     priority: 55
 
   config:
@@ -124,8 +126,12 @@ slices:
       - "**/*.yaml"
       - "**/*.yml"
       - "**/*.toml"
+      - go.mod
       - tsconfig.json
       - vite.config.ts
+      - vitest.config.ts
+      - Justfile
+      - Makefile
     exclude:
       - client/package-lock.json
     priority: 40
@@ -139,11 +145,14 @@ slices:
     include:
       - Dockerfile*
       - docker-compose*
+      - build/**
     priority: 20
 
   tests:
     include:
       - "**/*_test.go"
+      - "client/src/**/*.test.ts"
+      - "client/test/**/*.ts"
     priority: 45
 
   docs:
@@ -157,10 +166,6 @@ slices:
     exclude: []
     priority: 1
 
-###############################################################################
-# PROFILES: Designed for REAL USAGE SCENARIOS
-###############################################################################
-
 profiles:
   backend:
     enable: [backend, config, http]
@@ -168,12 +173,12 @@ profiles:
       max_chars: 160000
 
   frontend:
-    enable: [frontend, ui, state, config, workers]
+    enable: [frontend, ui, state, session, config, workers]
     budgets:
       max_chars: 160000
 
   protocol:
-    enable: [protocol, config]
+    enable: [protocol, session, config]
     budgets:
       max_chars: 160000
 
@@ -181,6 +186,7 @@ profiles:
     enable:
       - backend
       - protocol
+      - session
       - frontend
       - ui
       - state
@@ -191,12 +197,12 @@ profiles:
       tree_depth: 6
 
   ui-only:
-    enable: [ui, state, frontend, config]
+    enable: [ui, state, frontend, session, config]
     budgets:
       max_chars: 100000
 
   security-audit:
-    enable: [protocol, backend, config]
+    enable: [protocol, session, backend, config]
     budgets:
       max_chars: 200000
 
@@ -210,6 +216,7 @@ profiles:
       - backend
       - frontend
       - protocol
+      - session
       - ui
       - state
       - workers
@@ -221,3 +228,23 @@ profiles:
       max_chars: 300000
     render:
       tree_depth: 6
+
+  complete:
+    enable:
+      - backend
+      - frontend
+      - protocol
+      - session
+      - ui
+      - state
+      - workers
+      - config
+      - http
+      - infra
+      - tests
+      - docs
+      - misc
+    budgets:
+      max_chars: 400000
+    render:
+      tree_depth: 7
