@@ -9,6 +9,8 @@
   --tactical-green: #4ade80;
   --tactical-green-dim: rgba(74, 222, 128, 0.1);
   --danger-red: #ef4444;
+  --warning-yellow: #facc15;
+  --warning-yellow-dim: rgba(250, 204, 21, 0.1);
 
   --sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -71,6 +73,23 @@ body {
   border-color: var(--tactical-green);
   color: var(--tactical-green);
   background: var(--tactical-green-dim);
+}
+
+.status-badge.reconnecting {
+  border-color: var(--warning-yellow);
+  color: var(--warning-yellow);
+  background: var(--warning-yellow-dim);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* Info & Docs Panel */
@@ -155,7 +174,7 @@ input[type="text"] {
   color: var(--text-main);
   font-family: var(--sans);
   font-size: 0.95rem;
-  min-width: 0; /* Prevents input from forcing flex container to expand */
+  min-width: 0;
 }
 
 input[type="text"]:focus {
@@ -179,6 +198,7 @@ button:hover {
   background: transparent;
   color: var(--text-main);
 }
+
 button:disabled {
   opacity: 0.3;
   cursor: not-allowed;
@@ -189,6 +209,7 @@ button:disabled {
   border-color: var(--danger-red);
   color: var(--danger-red);
 }
+
 .btn-danger:hover {
   background: var(--danger-red);
   color: var(--bg-main);
@@ -218,7 +239,6 @@ button:disabled {
   padding: 0;
   display: flex;
   flex-direction: column;
-  /* CRITICAL: Prevents long strings from breaking layout */
   overflow-wrap: break-word;
   word-wrap: break-word;
   word-break: break-word;
@@ -297,6 +317,7 @@ button:disabled {
   color: var(--text-muted);
   font-size: 0.95rem;
 }
+
 .modal-content strong {
   color: var(--text-main);
 }
@@ -306,7 +327,7 @@ button:disabled {
   width: 100%;
 }
 
-/* Mobile Responsiveness */
+/* Mobile */
 @media (max-width: 600px) {
   .onlytwo-root {
     height: 100vh;
