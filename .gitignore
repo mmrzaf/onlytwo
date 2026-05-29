@@ -1,6 +1,5 @@
 # build outputs
 client/dist/
-onlytwo-server
 coverage/
 *.test
 
