@@ -81,7 +81,7 @@ export class FileSender {
       inflight: new Map(),
       reason: queued ? "waiting" : undefined
     };
-    if (file.size <= 64 * 1024 * 1024) {
+    if (file.size <= this.profile.files.smallBytes) {
       try { transfer.sha256 = await digestBlob(file); } catch { transfer.sha256 = undefined; }
     }
     this.transfers.set(fileId, transfer);
