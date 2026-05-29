@@ -119,37 +119,74 @@ slices:
       - client/src/main.ts
       - client/src/env.d.ts
       - client/src/utils/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 85
+
+  client-app:
+    include:
+      - client/src/app/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
+    priority: 88
+
+  client-runtime:
+    include:
+      - client/src/runtime/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
+    priority: 97
 
   client-config:
     include:
       - client/src/config/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 80
 
   client-protocol:
     include:
       - client/src/protocol/**/*.ts
       - client/src/features/file/fileProtocol.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 96
 
   crypto:
     include:
       - client/src/crypto/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 98
 
   transport:
     include:
       - client/src/transport/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 95
 
   client-session:
     include:
       - client/src/session/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 93
 
   feature-audio:
     include:
       - client/src/features/audio/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 78
 
   feature-file:
@@ -157,17 +194,25 @@ slices:
       - client/src/features/file/**/*.ts
     exclude:
       - client/src/features/file/fileProtocol.ts
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 76
 
   feature-text:
     include:
       - client/src/features/text/**/*.ts
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 74
 
   ui:
     include:
       - client/src/ui/**/*.ts
       - client/src/style.css
+    exclude:
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
     priority: 70
 
   tests:
@@ -234,6 +279,8 @@ profiles:
   frontend:
     enable:
       - client-core
+      - client-app
+      - client-runtime
       - client-config
       - client-protocol
       - crypto
@@ -245,46 +292,79 @@ profiles:
       - ui
       - config
     budgets:
-      max_chars: 220000
+      max_chars: 240000
+
+  app:
+    enable:
+      - client-app
+      - client-runtime
+      - client-core
+      - client-config
+      - client-session
+      - client-protocol
+      - transport
+      - crypto
+      - feature-text
+      - ui
+      - config
+    budgets:
+      max_chars: 160000
+
+  runtime:
+    enable:
+      - client-runtime
+      - client-app
+      - client-session
+      - client-protocol
+      - transport
+      - crypto
+      - config
+      - docs
+    budgets:
+      max_chars: 180000
 
   protocol:
     enable:
       - client-protocol
       - crypto
       - transport
+      - client-runtime
       - client-session
       - backend-session
       - ws
       - config
       - docs
     budgets:
-      max_chars: 220000
+      max_chars: 230000
 
   crypto:
     enable:
       - crypto
       - client-protocol
       - transport
+      - client-runtime
       - client-session
       - config
       - docs
     budgets:
-      max_chars: 160000
+      max_chars: 170000
 
   transport:
     enable:
       - transport
       - ws
       - client-protocol
+      - client-runtime
       - backend-session
       - config
       - docs
     budgets:
-      max_chars: 160000
+      max_chars: 170000
 
   audio:
     enable:
       - feature-audio
+      - client-runtime
       - transport
       - client-protocol
       - crypto
@@ -292,7 +372,7 @@ profiles:
       - ui
       - config
     budgets:
-      max_chars: 150000
+      max_chars: 160000
 
   file-transfer:
     enable:
@@ -300,24 +380,27 @@ profiles:
       - client-protocol
       - crypto
       - transport
+      - client-runtime
       - client-session
       - backend-session
       - ws
       - ui
       - config
     budgets:
-      max_chars: 170000
+      max_chars: 180000
 
   ui-only:
     enable:
       - ui
+      - client-app
+      - client-runtime
       - client-core
       - client-config
       - client-session
       - feature-text
       - config
     budgets:
-      max_chars: 120000
+      max_chars: 130000
 
   tests:
     enable:
@@ -327,27 +410,32 @@ profiles:
       - backend-session
       - ws
       - client-core
+      - client-app
+      - client-runtime
       - client-protocol
       - crypto
       - transport
       - client-session
+      - client-config
       - config
     budgets:
-      max_chars: 260000
+      max_chars: 280000
 
   security-audit:
     enable:
       - crypto
       - client-protocol
       - transport
+      - client-runtime
       - client-session
+      - client-app
       - backend
       - backend-session
       - ws
       - config
       - docs
     budgets:
-      max_chars: 260000
+      max_chars: 280000
 
   docs:
     enable:
@@ -371,6 +459,8 @@ profiles:
       - backend-session
       - ws
       - client-core
+      - client-app
+      - client-runtime
       - client-config
       - client-protocol
       - crypto
@@ -383,7 +473,7 @@ profiles:
       - config
       - docs
     budgets:
-      max_chars: 520000
+      max_chars: 560000
     render:
       tree_depth: 7
 
@@ -394,6 +484,8 @@ profiles:
       - backend-session
       - ws
       - client-core
+      - client-app
+      - client-runtime
       - client-config
       - client-protocol
       - crypto
@@ -408,7 +500,7 @@ profiles:
       - docs
       - infra
     budgets:
-      max_chars: 700000
+      max_chars: 740000
     render:
       tree_depth: 7
 
@@ -419,6 +511,8 @@ profiles:
       - backend-session
       - ws
       - client-core
+      - client-app
+      - client-runtime
       - client-config
       - client-protocol
       - crypto
