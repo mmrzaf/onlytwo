@@ -1,0 +1,43 @@
+services:
+  web:
+    build: .
+    image: onlytwo:latest
+    container_name: onlytwo-web
+    expose:
+      - "8080"
+    environment:
+      - ONLYTWO_PORT=8080
+    networks:
+      - onlytwo-net
+      - proxy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8080' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.onlytwo.rule=Host(`${ONLYTWO_DOMAIN:?ONLYTWO_DOMAIN missing}`)"
+      - "traefik.http.routers.onlytwo.entrypoints=websecure"
+      - "traefik.http.routers.onlytwo.tls.certresolver=le"
+      - "traefik.http.services.onlytwo.loadbalancer.server.port=8080"
+      - "traefik.http.routers.onlytwo.middlewares=security-headers@file,compression@file,rate-limit@file"
+
+networks:
+  onlytwo-net:
+    driver: bridge
+  proxy:
+    external: true
