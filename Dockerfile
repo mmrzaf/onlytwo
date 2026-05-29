@@ -1,4 +1,4 @@
-FROM node:24 AS client-builder
+FROM node:22 AS client-builder
 
 WORKDIR /src/client
 
