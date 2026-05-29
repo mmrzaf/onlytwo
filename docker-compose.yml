@@ -10,12 +10,6 @@ services:
     networks:
       - onlytwo-net
       - proxy
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8080' || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     security_opt:
       - no-new-privileges:true
     read_only: false
