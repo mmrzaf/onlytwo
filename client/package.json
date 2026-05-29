@@ -1,0 +1,22 @@
+{
+  "name": "onlytwo-client",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "format": "prettier --write \"src/**/*.{ts,css}\""
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest",
+    "jsdom": "latest",
+    "prettier": "latest"
+  }
+}
