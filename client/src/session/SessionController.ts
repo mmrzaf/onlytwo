@@ -29,6 +29,11 @@ import {
   verificationPhrase,
 } from "../protocol/negotiation";
 import {
+  ReliableChannel,
+  isReliableEnvelope,
+  shouldSendReliably,
+} from "../protocol/reliable";
+import {
   WebSocketConnection,
   type ConnectionStatus,
 } from "../transport/WebSocketConnection";
@@ -69,6 +74,16 @@ export class SessionController {
 
   private cryptoSerial: Promise<unknown> = Promise.resolve();
   private transferOrder: string[] = [];
+  private reliable = new ReliableChannel({
+    send: (message, lane) => this.sendRawApp(message, lane),
+    onDelivered: (_reliableId, trackingId) => {
+      if (trackingId) this.updateTranscriptStatus(trackingId, "sent");
+    },
+    onFailed: (_reliableId, trackingId, reason) => {
+      if (trackingId) this.updateTranscriptStatus(trackingId, "failed");
+      this.patch({ notice: reason });
+    },
+  });
 
   private state: SessionViewState = {
     phase: "idle",
@@ -142,15 +157,11 @@ export class SessionController {
       status: "sending",
     });
 
-    const ok = await this.sendApp(message, "text");
+    const ok = await this.sendApp(message, "text", message.messageId);
 
-    this.state.transcript = this.state.transcript.map((item) =>
-      item.id === message.messageId
-        ? { ...item, status: ok ? "sent" : "failed" }
-        : item,
-    );
-
-    this.emit();
+    if (!ok) {
+      this.updateTranscriptStatus(message.messageId, "failed");
+    }
   }
 
   async offerFile(file: File): Promise<void> {
@@ -221,6 +232,7 @@ export class SessionController {
           streamId: "voice",
           sampleRate: this.voice.actualSampleRate,
           frameMs: this.profile.voice.frameMs,
+          mode: this.profile.voice.mode,
         },
         "control",
       );
@@ -310,6 +322,7 @@ export class SessionController {
     this.peerPublicKey = null;
     this.cryptoSerial = Promise.resolve();
     this.transferOrder = [];
+    this.reliable.reset();
 
     if (!silent) {
       this.patch({
@@ -337,6 +350,7 @@ export class SessionController {
     this.receiver.setProfile(this.profile);
 
     this.transferOrder = [];
+    this.reliable.reset();
     this.initialHandshakeSent = false;
     this.replyHandshakeSent = false;
     this.establishing = false;
@@ -519,6 +533,12 @@ export class SessionController {
   }
 
   private async handleAppMessage(message: AppMessage): Promise<void> {
+    if (isReliableEnvelope(message)) {
+      const unwrapped = await this.reliable.receive(message);
+      if (unwrapped) await this.handleAppMessage(unwrapped);
+      return;
+    }
+
     switch (message.kind) {
       case "session.verified":
         if (this.state.security !== "verified") {
@@ -603,7 +623,20 @@ export class SessionController {
     await this.sendApp({ kind: "voice.frame", ...frame }, "voice");
   }
 
-  private async sendApp(message: AppMessage, lane: LaneName): Promise<boolean> {
+  private async sendApp(
+    message: AppMessage,
+    lane: LaneName,
+    trackingId?: string,
+  ): Promise<boolean> {
+    if (shouldSendReliably(message, lane)) {
+      const channel = lane === "text" ? "text" : "control";
+      return this.reliable.send(message, channel, { trackingId });
+    }
+
+    return this.sendRawApp(message, lane);
+  }
+
+  private async sendRawApp(message: AppMessage, lane: LaneName): Promise<boolean> {
     if (!this.secure) return false;
 
     try {
@@ -633,7 +666,7 @@ export class SessionController {
     if (!this.localPublicKey) return;
 
     const hs: HandshakeMessage = {
-      kind: "handshake.v5",
+      kind: "handshake.v2",
       publicKey: bytesToBase64Url(this.localPublicKey),
       preferredProfile: this.profile.id,
       supportedProfiles: supportedProfileIds(),
@@ -750,6 +783,13 @@ export class SessionController {
       this.state.voice === "active" ||
       this.state.voice === "muted"
     );
+  }
+
+  private updateTranscriptStatus(id: string, status: "sending" | "sent" | "failed"): void {
+    this.state.transcript = this.state.transcript.map((item) =>
+      item.id === id ? { ...item, status } : item,
+    );
+    this.emit();
   }
 
   private addTranscript(item: SessionViewState["transcript"][number]): void {

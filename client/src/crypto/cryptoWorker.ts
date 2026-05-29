@@ -7,17 +7,17 @@ const NONCE_BYTES = 12;
 const X25519_PUBLIC_BYTES = 32;
 const AES_KEY_BYTES = 32;
 const ZERO_32 = new Uint8Array(32);
-const ROOT_INFO = utf8Encode("onlytwo-v5-root");
-const CHAIN_SEND_INFO = utf8Encode("onlytwo-v5-chain-send");
-const CHAIN_RECV_INFO = utf8Encode("onlytwo-v5-chain-recv");
-const CHAIN_STEP_INFO = utf8Encode("onlytwo-v5-chain-step");
+const ROOT_INFO = utf8Encode("onlytwo-v2-root");
+const CHAIN_SEND_INFO = utf8Encode("onlytwo-v2-chain-send");
+const CHAIN_RECV_INFO = utf8Encode("onlytwo-v2-chain-recv");
+const CHAIN_STEP_INFO = utf8Encode("onlytwo-v2-chain-step");
 
 interface WorkerRequest { id: string; type: string; payload?: unknown }
 interface CryptoConfig { paddingBuckets: number[]; maxSkippedMessageKeys: number; protocolVersion: number }
 interface EncryptRequest { data: unknown; aadContext: AadContext }
 interface DecryptRequest { ciphertext: unknown; nonce: unknown; counter: unknown; aadContext: AadContext }
 
-let config: CryptoConfig = { paddingBuckets: [4096, 16384, 65536, 131072], maxSkippedMessageKeys: 4096, protocolVersion: 4 };
+let config: CryptoConfig = { paddingBuckets: [4096, 16384, 65536, 131072], maxSkippedMessageKeys: 4096, protocolVersion: 2 };
 let identityKeyPair: CryptoKeyPair | null = null;
 let identityPublicRaw: Uint8Array | null = null;
 let rootKey: Uint8Array | null = null;
@@ -85,7 +85,7 @@ async function establishSession(peerRaw: Uint8Array, profileHashValue: string): 
 
   const peerKey = await importX25519Public(peerRaw);
   const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: peerKey }, identityKeyPair.privateKey, 256));
-  const salt = new Uint8Array(await crypto.subtle.digest("SHA-256", bufferFromBytes(utf8Encode(`onlytwo-v5:${profileHashValue}`))));
+  const salt = new Uint8Array(await crypto.subtle.digest("SHA-256", bufferFromBytes(utf8Encode(`onlytwo-v2:${profileHashValue}`))));
   rootKey = await hkdf(shared, salt, ROOT_INFO, AES_KEY_BYTES);
 
   const localIsLower = compareBytes(identityPublicRaw, peerRaw) < 0;
