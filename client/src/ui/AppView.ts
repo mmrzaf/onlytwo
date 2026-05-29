@@ -280,7 +280,7 @@ export class AppView {
     }
 
     if (active) {
-      line.append(el("span", undefined, `${active.name} · ${transferStateLabel(active)} · ${Math.round(active.progress)}%`));
+      line.append(el("span", undefined, `${active.name} · ${transferStateLabel(active)} · ${formatProgress(active.progress)}`));
       const open = button("Transfers", "link-btn small");
       open.onclick = () => this.openSheet("transfers");
       line.append(open);
@@ -500,7 +500,7 @@ export class AppView {
     const meta = el("div", "transfer-meta", transferMeta(transfer));
     const progress = el("div", "progress");
     const bar = el("div", "progress-bar");
-    bar.style.width = `${clamp(transfer.progress, 0, 100)}%`;
+    bar.style.width = `${progressPercent(transfer.progress)}%`;
     progress.append(bar);
 
     const actions = el("div", "transfer-actions");
@@ -800,7 +800,7 @@ function transferStateLabel(transfer: TransferView): string {
 }
 
 function transferMeta(transfer: TransferView): string {
-  const parts = [transferStateLabel(transfer), `${Math.round(transfer.progress)}%`];
+  const parts = [transferStateLabel(transfer), formatProgress(transfer.progress)];
   if (transfer.reason && transfer.state !== "paused" && transfer.state !== "failed") {
     parts.push(transfer.reason);
   }
@@ -830,3 +830,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function progressPercent(progress: number): number {
+  return clamp(progress * 100, 0, 100);
+}
+
+function formatProgress(progress: number): string {
+  return `${Math.round(progressPercent(progress))}%`;
+}
