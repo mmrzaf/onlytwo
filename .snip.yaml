@@ -1,0 +1,441 @@
+version: 1
+root: .
+name: onlytwo_v2
+default_profile: full
+
+output:
+  dir: /home/darius/tmp/
+  pattern: onlytwo_{profile}_{ts}_{gitsha}.md
+  latest: ""
+  stdout_default: false
+
+render:
+  format: md
+  newline: |4+
+  code_fences: true
+  include_tree: true
+  tree_depth: 6
+  include_manifest: true
+  manifest:
+    group_by_slice: true
+    include_line_counts: true
+    include_byte_counts: true
+    include_truncation_notes: true
+    include_unreadable_notes: true
+  file_block:
+    header: <<<FILE:{path}>>>
+    footer: ""
+
+budgets:
+  max_chars: 240000
+  per_file_max_lines: 1200
+  per_file_max_bytes: 262144
+  drop_policy: drop_low_priority
+
+ignore:
+  use_gitignore: true
+  always:
+    - .git/**
+    - .snip/**
+    - node_modules/**
+    - dist/**
+    - build/**
+    - coverage/**
+    - target/**
+    - tmp/**
+    - .cache/**
+    - .venv/**
+    - .pytest_cache/**
+  binary_extensions:
+    - .png
+    - .jpg
+    - .jpeg
+    - .gif
+    - .webp
+    - .ico
+    - .pdf
+    - .zip
+    - .tar
+    - .gz
+    - .7z
+    - .exe
+    - .dll
+    - .so
+    - .dylib
+    - .wasm
+    - .mp3
+    - .wav
+    - .ogg
+    - .mp4
+    - .mov
+
+sensitive:
+  exclude_globs:
+    - .env
+    - .env.*
+    - "**/.env"
+    - "**/.env.*"
+    - "**/*secret*"
+    - "**/*secrets*"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/id_rsa*"
+    - "**/*serviceAccount*.json"
+
+slices:
+  backend:
+    include:
+      - cmd/**/*.go
+      - static.go
+      - internal/config/**/*.go
+    exclude:
+      - "**/*_test.go"
+    priority: 100
+
+  http:
+    include:
+      - internal/http/**/*.go
+    exclude:
+      - "**/*_test.go"
+    priority: 90
+
+  backend-session:
+    include:
+      - internal/session/**/*.go
+    exclude:
+      - "**/*_test.go"
+    priority: 92
+
+  ws:
+    include:
+      - internal/ws/**/*.go
+    exclude:
+      - "**/*_test.go"
+    priority: 94
+
+  client-core:
+    include:
+      - client/index.html
+      - client/src/main.ts
+      - client/src/env.d.ts
+      - client/src/utils/**/*.ts
+    priority: 85
+
+  client-config:
+    include:
+      - client/src/config/**/*.ts
+    priority: 80
+
+  client-protocol:
+    include:
+      - client/src/protocol/**/*.ts
+      - client/src/features/file/fileProtocol.ts
+    priority: 96
+
+  crypto:
+    include:
+      - client/src/crypto/**/*.ts
+    priority: 98
+
+  transport:
+    include:
+      - client/src/transport/**/*.ts
+    priority: 95
+
+  client-session:
+    include:
+      - client/src/session/**/*.ts
+    priority: 93
+
+  feature-audio:
+    include:
+      - client/src/features/audio/**/*.ts
+    priority: 78
+
+  feature-file:
+    include:
+      - client/src/features/file/**/*.ts
+    exclude:
+      - client/src/features/file/fileProtocol.ts
+    priority: 76
+
+  feature-text:
+    include:
+      - client/src/features/text/**/*.ts
+    priority: 74
+
+  ui:
+    include:
+      - client/src/ui/**/*.ts
+      - client/src/style.css
+    priority: 70
+
+  tests:
+    include:
+      - internal/**/*_test.go
+      - client/src/**/*.test.ts
+      - client/src/**/*.spec.ts
+      - client/test/**/*.ts
+    priority: 45
+
+  config:
+    include:
+      - .snip.yaml
+      - go.mod
+      - go.sum
+      - Justfile
+      - Makefile
+      - client/package.json
+      - client/tsconfig.json
+      - client/vite.config.ts
+      - client/vitest.config.ts
+    priority: 50
+
+  docs:
+    include:
+      - README.md
+      - SDD.md
+      - IMPLEMENTATION_NOTES.md
+      - docs/**/*.md
+    priority: 25
+
+  lockfiles:
+    include:
+      - client/package-lock.json
+    priority: 5
+
+  infra:
+    include:
+      - Dockerfile
+      - Dockerfile.*
+      - docker-compose.yml
+      - docker-compose.yaml
+      - .github/**
+      - deploy/**
+      - build/**
+    priority: 20
+
+  misc:
+    include: []
+    exclude: []
+    priority: 1
+
+profiles:
+  backend:
+    enable:
+      - backend
+      - http
+      - backend-session
+      - ws
+      - config
+    budgets:
+      max_chars: 180000
+
+  frontend:
+    enable:
+      - client-core
+      - client-config
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - feature-audio
+      - feature-file
+      - feature-text
+      - ui
+      - config
+    budgets:
+      max_chars: 220000
+
+  protocol:
+    enable:
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - backend-session
+      - ws
+      - config
+      - docs
+    budgets:
+      max_chars: 220000
+
+  crypto:
+    enable:
+      - crypto
+      - client-protocol
+      - transport
+      - client-session
+      - config
+      - docs
+    budgets:
+      max_chars: 160000
+
+  transport:
+    enable:
+      - transport
+      - ws
+      - client-protocol
+      - backend-session
+      - config
+      - docs
+    budgets:
+      max_chars: 160000
+
+  audio:
+    enable:
+      - feature-audio
+      - transport
+      - client-protocol
+      - crypto
+      - client-session
+      - ui
+      - config
+    budgets:
+      max_chars: 150000
+
+  file-transfer:
+    enable:
+      - feature-file
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - backend-session
+      - ws
+      - ui
+      - config
+    budgets:
+      max_chars: 170000
+
+  ui-only:
+    enable:
+      - ui
+      - client-core
+      - client-config
+      - client-session
+      - feature-text
+      - config
+    budgets:
+      max_chars: 120000
+
+  tests:
+    enable:
+      - tests
+      - backend
+      - http
+      - backend-session
+      - ws
+      - client-core
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - config
+    budgets:
+      max_chars: 260000
+
+  security-audit:
+    enable:
+      - crypto
+      - client-protocol
+      - transport
+      - client-session
+      - backend
+      - backend-session
+      - ws
+      - config
+      - docs
+    budgets:
+      max_chars: 260000
+
+  docs:
+    enable:
+      - docs
+      - config
+    budgets:
+      max_chars: 120000
+
+  infra:
+    enable:
+      - infra
+      - config
+      - docs
+    budgets:
+      max_chars: 100000
+
+  fullstack:
+    enable:
+      - backend
+      - http
+      - backend-session
+      - ws
+      - client-core
+      - client-config
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - feature-audio
+      - feature-file
+      - feature-text
+      - ui
+      - config
+      - docs
+    budgets:
+      max_chars: 520000
+    render:
+      tree_depth: 7
+
+  full:
+    enable:
+      - backend
+      - http
+      - backend-session
+      - ws
+      - client-core
+      - client-config
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - feature-audio
+      - feature-file
+      - feature-text
+      - ui
+      - tests
+      - config
+      - docs
+      - infra
+    budgets:
+      max_chars: 700000
+    render:
+      tree_depth: 7
+
+  complete:
+    enable:
+      - backend
+      - http
+      - backend-session
+      - ws
+      - client-core
+      - client-config
+      - client-protocol
+      - crypto
+      - transport
+      - client-session
+      - feature-audio
+      - feature-file
+      - feature-text
+      - ui
+      - tests
+      - config
+      - docs
+      - infra
+      - lockfiles
+      - misc
+    budgets:
+      max_chars: 1000000
+      per_file_max_lines: 1600
+    render:
+      tree_depth: 8

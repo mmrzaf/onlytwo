@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+client/node_modules
+client/dist
+dist
+release
+onlytwo-server
+*.sqlite
+*.db
+.env
