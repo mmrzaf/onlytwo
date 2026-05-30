@@ -1,6 +1,5 @@
 {
   "name": "onlytwo-client",
-  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,11 +11,11 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@vitejs/plugin-basic-ssl": "latest",
-    "typescript": "latest",
-    "vite": "latest",
-    "vitest": "latest",
-    "jsdom": "latest",
-    "prettier": "latest"
+    "@vitejs/plugin-basic-ssl": "2.3.0",
+    "typescript": "6.0.3",
+    "vite": "8.0.14",
+    "vitest": "4.1.7",
+    "jsdom": "29.1.1",
+    "prettier": "3.8.3"
   }
 }
