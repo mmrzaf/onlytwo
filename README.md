@@ -1,159 +1,84 @@
 # OnlyTwo
 
-OnlyTwo is a two-party, browser-based encrypted messenger for text, file transfer, and voice chat over a hardened WebSocket relay.
+OnlyTwo is a private, ephemeral browser room for exactly two people. Messages, files, and realtime voice are encrypted in the browser before they leave either device. The server creates rooms, relays opaque frames, and coordinates lifecycle events; it does not store chat history.
 
-The relay is intentionally dumb: it creates short-lived rooms, admits two peers, enforces transport limits, and forwards opaque binary frames. Message content is encrypted in the browser before it reaches the server.
+Current release candidate: `v2.0.0-beta.3`  
+Wire protocol: `2`
 
-## Core properties
+## Product behavior
 
-* two-party rooms;
-* browser-side encryption before relay transit;
-* opaque WebSocket frame forwarding;
-* profile-driven transport limits;
-* bounded lane-based packet queues;
-* encrypted text, file, and voice messages;
-* explicit encrypted-unverified and verified session states;
-* out-of-band safety-code verification;
-* server-side origin checks, rate limits, frame limits, and security headers.
+- The creator selects one locked transport profile when creating a room.
+- A joiner enters only the room code and inherits that room profile.
+- Refresh and temporary network loss preserve the room but start a fresh cryptographic epoch. A refreshed browser does not recover previous transcript messages or files.
+- `End chat for both` deletes the active room, clears both local chat views, and tombstones the previous room code for the session TTL.
+- Voice is realtime: stale audio is dropped instead of accumulating delay.
+- File transfers are chunked, bounded, and paused during active voice when required by runtime policy.
 
-## Security model
+## Requirements
 
-OnlyTwo encrypts application content in the browser. The relay does not decrypt message payloads.
-
-A session is encrypted after key exchange, but it is not authenticated until both users compare the displayed safety code through an independent channel. Until that comparison is complete, the session must be treated as **encrypted but unverified**.
-
-A verified session means both users confirmed they are seeing the same cryptographic session. It does not mean the software has been externally audited, the browser environment is uncompromised, or the hosting operator is trusted with endpoint security.
-
-OnlyTwo uses browser WebCrypto primitives and a custom message-key ratchet. This design is suitable as a strong application-security baseline, but high-risk deployments should require independent cryptographic and implementation review.
-
-## Features
-
-### Text
-
-Text messages are encrypted client-side and sent through the relay as opaque frames.
-
-### File transfer
-
-Files are split into bounded chunks, encrypted in the browser, transferred over the file lane, and reconstructed by the receiving peer.
-
-### Voice
-
-Voice chat uses encrypted PCM16 voice frames. Voice behavior is controlled by the selected transport profile and may prioritize bandwidth, latency, or traffic-shaping characteristics.
-
-## Transport profiles
-
-Transport profiles are defined in `client/src/config/profiles.ts`.
-
-Available profiles:
-
-* `balanced` — default profile for normal use.
-* `low_data` — reduces bandwidth pressure with tighter transport behavior.
-* `voice_first` — prioritizes voice responsiveness over bulk transfer.
-* `maximum_privacy` — favors larger padding buckets and stronger traffic-shaping behavior.
-
-Profiles express user intent. Server-side limits remain authoritative.
-
-## Architecture
-
-OnlyTwo is split into four main layers:
-
-1. **Browser client** — UI, session state, crypto worker, message protocol, file transfer, voice capture/playback, and WebSocket transport.
-2. **Protocol layer** — binary envelopes, encrypted application messages, profile negotiation, reliable control/text delivery, and lane scheduling.
-3. **Relay server** — HTTP routing, static asset serving, WebSocket upgrade handling, session registry, admission checks, rate limits, and frame forwarding.
-4. **Deployment layer** — embedded Vite build, Go server binary, Docker image, and release automation.
-
-More detail is available in:
-
-* `docs/ARCHITECTURE.md`
-* `docs/SECURITY.md`
-* `docs/TRANSPORT.md`
-* `SDD.md`
+- Go toolchain from `go.mod`
+- Node.js 22
+- HTTPS for deployed microphone access
 
 ## Local development
 
-Run the full local development stack:
-
 ```bash
+cd client
+npm ci
+cd ..
 make dev
 ```
 
-Or run server and client separately:
+Run validation:
 
 ```bash
-make server
-make client
+cd client
+npm ci
+npm test -- --run
+npm run build
+cd ..
+go test ./...
+go vet ./...
+go test -race ./internal/session ./internal/http ./internal/ws
 ```
-
-The client is served by Vite during development. The Go server handles relay and HTTP endpoints.
-
-## Build
-
-Build the production client and server:
-
-```bash
-make build
-```
-
-The production Go binary embeds `client/dist`.
-
-## Test
-
-Run Go tests:
-
-```bash
-make test-go
-```
-
-Run client tests:
-
-```bash
-make test-client
-```
-
-Run the full test suite:
-
-```bash
-make test
-```
-
-## Configuration
-
-Runtime configuration is provided through environment variables.
-
-Common server settings:
-
-```bash
-ONLYTWO_ADDR=:8080
-ONLYTWO_ALLOWED_ORIGINS=https://your-domain.example
-ONLYTWO_SESSION_TTL_SECONDS=3600
-ONLYTWO_MAX_FRAME_BYTES=262144
-ONLYTWO_SEND_BUFFER_SIZE=128
-ONLYTWO_RATE_LIMIT_PER_MINUTE=600
-ONLYTWO_MAX_SESSIONS_PER_IP=64
-ONLYTWO_MAX_CONNECTIONS_PER_IP=128
-ONLYTWO_WRITE_WAIT_SECONDS=10
-ONLYTWO_PONG_WAIT_SECONDS=60
-```
-
-`ONLYTWO_ALLOWED_ORIGINS` should be set explicitly in production. Use comma-separated origins when multiple public origins are valid.
 
 ## Deployment
 
-OnlyTwo can be deployed as a single Go server that serves the embedded browser client and WebSocket relay.
+The included Docker image embeds the production Vite build in the Go server. Configure the deployment with environment variables.
 
-A typical deployment should place the server behind TLS and a trusted reverse proxy. The public origin configured in the reverse proxy must match `ONLYTWO_ALLOWED_ORIGINS`.
+| Variable | Default | Purpose |
+|---|---|---|
+| `ONLYTWO_ADDR` | `:8080` | HTTP listen address inside the container |
+| `ONLYTWO_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to open WebSockets, for example `https://chat.example.com` |
+| `ONLYTWO_TRUSTED_PROXIES` | empty | Comma-separated reverse-proxy IPs or CIDRs permitted to supply forwarded client IP headers |
+| `ONLYTWO_SESSION_TTL_SECONDS` | `3600` | Idle-room expiry and ended-room tombstone lifetime |
+| `ONLYTWO_MAX_FRAME_BYTES` | `262144` | Maximum relayed WebSocket frame size |
+| `ONLYTWO_MAX_SESSIONS_PER_IP` | `64` | Room creation admission limit per client IP |
+| `ONLYTWO_MAX_CONNECTIONS_PER_IP` | `128` | Concurrent WebSocket admission limit per client IP |
 
-## Operational notes
+Set `ONLYTWO_TRUSTED_PROXIES` narrowly. Do not trust a broad public range. When the Go server is directly exposed, leave it empty.
 
-* Use HTTPS/WSS in production.
-* Keep origin allowlists explicit.
-* Keep server frame limits aligned with client transport profiles.
-* Treat unverified sessions as encrypted transport only, not authenticated communication.
-* Do not rely on the relay for confidentiality; confidentiality is provided by the browser clients.
-* Do not use this system for high-risk communication without independent security review.
+The provided Compose file expects `ONLYTWO_DOMAIN` and sets:
 
-## License
+```text
+ONLYTWO_ADDR=:8080
+ONLYTWO_ALLOWED_ORIGINS=https://${ONLYTWO_DOMAIN}
+```
 
-OnlyTwo is licensed under the **GNU GPL 3.0 or later**.
-See the [`LICENSE`](./LICENSE) file for details.
+## Security scope
 
+OnlyTwo provides encrypted ephemeral transport between two browsers and a user-verifiable safety phrase. The relay still observes connection metadata, timing, and encrypted frame sizes. A browser cannot erase screenshots, saved downloads, or data copied by a peer.
+
+See `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, and `docs/TRANSPORT.md` for the detailed model.
+
+## Release checklist
+
+Before tagging a beta release, test Debian and Android browsers in both directions:
+
+1. Create every room profile and confirm the joiner inherits the locked profile.
+2. Refresh either peer and confirm the same room profile remains active with a new safety phrase.
+3. Mistype a room code and confirm joining fails immediately.
+4. Send files in both directions, including a large file.
+5. Run continuous voice for at least ten minutes and confirm delay stays bounded.
+6. Refresh during voice and during a file transfer.
+7. Press `End chat for both` from either side and confirm the old room code is rejected.
