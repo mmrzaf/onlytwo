@@ -24,6 +24,14 @@ export interface VoiceFrame {
   pcm16: string;
 }
 
+interface PlaybackFrame {
+  seq: number;
+  frame: VoiceFrame;
+  pcm16: Uint8Array;
+  receivedAt: number;
+}
+
+export type VoiceDropReason = "playback_stale" | "playback_lead_reset";
 export type VoiceStatus = "idle" | "requesting" | "active" | "muted" | "failed";
 
 export class VoiceService {
@@ -37,81 +45,130 @@ export class VoiceService {
   private muted = false;
   private captureBuffer: Float32Array[] = [];
   private captureSamples = 0;
-  private jitter: JitterBuffer<VoiceFrame>;
+  private jitter: JitterBuffer<PlaybackFrame>;
   private playbackTimer: ReturnType<typeof setInterval> | null = null;
   private nextPlaybackTime = 0;
   private streamId = "voice";
   private vad: VadGate;
+  private playbackBlockedValue = false;
+  private scheduledSources = new Set<AudioBufferSourceNode>();
 
-  constructor(private profile: TransportProfile) {
-    this.jitter = new JitterBuffer<VoiceFrame>(profile.voice.jitterMaxFrames);
+  constructor(
+    private profile: TransportProfile,
+    private readonly onDrop: (reason: VoiceDropReason) => void = () =>
+      undefined,
+  ) {
+    this.jitter = new JitterBuffer<PlaybackFrame>(
+      profile.voice.jitterMaxFrames,
+    );
     this.vad = new VadGate(this.vadConfig(profile));
   }
 
   setProfile(profile: TransportProfile): void {
     this.profile = profile;
-    this.jitter = new JitterBuffer<VoiceFrame>(profile.voice.jitterMaxFrames);
+    this.jitter = new JitterBuffer<PlaybackFrame>(
+      profile.voice.jitterMaxFrames,
+    );
     this.vad.setConfig(this.vadConfig(profile));
   }
 
-  get active(): boolean { return !!this.stream; }
-  get isMuted(): boolean { return this.muted; }
-  get actualSampleRate(): number { return this.inputCtx?.sampleRate ?? 48_000; }
+  get active(): boolean {
+    return !!this.stream;
+  }
+  get isMuted(): boolean {
+    return this.muted;
+  }
+  get actualSampleRate(): number {
+    return this.inputCtx?.sampleRate ?? 48_000;
+  }
+  get playbackBlocked(): boolean {
+    return this.playbackBlockedValue;
+  }
 
   async start(onFrame: (frame: VoiceFrame) => void): Promise<void> {
     if (this.stream) return;
-    if (!this.profile.voice.enabled) throw new Error("Voice is disabled in this profile");
+    if (!this.profile.voice.enabled)
+      throw new Error("Voice is disabled in this profile");
+    if (!window.isSecureContext)
+      throw new Error("Voice requires a secure HTTPS page");
+    if (!navigator.mediaDevices?.getUserMedia)
+      throw new Error("This browser does not expose microphone access");
+    if (typeof window.AudioContext !== "function")
+      throw new Error("This browser does not support Web Audio");
+    if (typeof AudioWorkletNode !== "function")
+      throw new Error(
+        "This browser does not support the current voice engine (AudioWorklet missing)",
+      );
 
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false
-    });
-    this.inputCtx = new AudioContext();
-    this.outputCtx = new AudioContext();
-    await this.inputCtx.resume();
-    await this.outputCtx.resume();
+    let stage = "audio_context_resume";
+    try {
+      this.inputCtx = new AudioContext();
+      this.outputCtx = new AudioContext();
+      await this.resumeContext(this.inputCtx);
+      await this.resumeContext(this.outputCtx);
+      this.playbackBlockedValue = false;
 
-    const workletUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "text/javascript" }));
-    try { await this.inputCtx.audioWorklet.addModule(workletUrl); }
-    finally { URL.revokeObjectURL(workletUrl); }
-
-    this.captureNode = new AudioWorkletNode(this.inputCtx, "onlytwo-capture");
-    this.sourceNode = this.inputCtx.createMediaStreamSource(this.stream);
-    this.zeroGain = this.inputCtx.createGain();
-    this.zeroGain.gain.value = 0;
-
-    this.sourceNode.connect(this.captureNode);
-    this.captureNode.connect(this.zeroGain);
-    this.zeroGain.connect(this.inputCtx.destination);
-
-    this.seq = 0;
-    this.vad.reset();
-
-    const sampleRate = this.inputCtx.sampleRate;
-    const samplesPerFrame = Math.max(320, Math.floor(sampleRate * this.profile.voice.frameMs / 1000));
-
-    this.captureNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      if (!this.stream || this.muted) return;
-
-      this.captureBuffer.push(event.data);
-      this.captureSamples += event.data.length;
-
-      while (this.captureSamples >= samplesPerFrame) {
-        const frame = this.readFrame(samplesPerFrame);
-        const framesToSend = this.framesAllowedByVoiceMode(frame);
-
-        for (const outboundFrame of framesToSend) {
-          onFrame({
-            streamId: this.streamId,
-            seq: ++this.seq,
-            sentAt: Date.now(),
-            sampleRate,
-            frameMs: this.profile.voice.frameMs,
-            pcm16: bytesToPayload(floatToPcm16(outboundFrame))
-          });
-        }
+      if (!this.inputCtx.audioWorklet) {
+        throw new Error(
+          "This browser does not support the current voice engine (AudioWorklet missing)",
+        );
       }
-    };
+
+      stage = "microphone_permission";
+      this.stream = await this.requestMicrophone();
+
+      stage = "audio_worklet_load";
+      const workletUrl = URL.createObjectURL(
+        new Blob([WORKLET_CODE], { type: "text/javascript" }),
+      );
+      try {
+        await this.inputCtx.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+
+      this.captureNode = new AudioWorkletNode(this.inputCtx, "onlytwo-capture");
+      this.sourceNode = this.inputCtx.createMediaStreamSource(this.stream);
+      this.zeroGain = this.inputCtx.createGain();
+      this.zeroGain.gain.value = 0;
+
+      this.sourceNode.connect(this.captureNode);
+      this.captureNode.connect(this.zeroGain);
+      this.zeroGain.connect(this.inputCtx.destination);
+
+      this.seq = 0;
+      this.vad.reset();
+
+      const sampleRate = this.inputCtx.sampleRate;
+      const samplesPerFrame = Math.max(
+        320,
+        Math.floor((sampleRate * this.profile.voice.frameMs) / 1000),
+      );
+
+      this.captureNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
+        if (!this.stream || this.muted) return;
+
+        this.captureBuffer.push(event.data);
+        this.captureSamples += event.data.length;
+
+        while (this.captureSamples >= samplesPerFrame) {
+          const frame = this.readFrame(samplesPerFrame);
+          for (const outboundFrame of this.framesAllowedByVoiceMode(frame)) {
+            onFrame({
+              streamId: this.streamId,
+              seq: ++this.seq,
+              sentAt: Date.now(),
+              sampleRate,
+              frameMs: this.profile.voice.frameMs,
+              pcm16: bytesToPayload(floatToPcm16(outboundFrame)),
+            });
+          }
+        }
+      };
+    } catch (err) {
+      this.stop();
+      throw voiceError(stage, err);
+    }
   }
 
   stop(): void {
@@ -119,14 +176,17 @@ export class VoiceService {
     this.captureBuffer = [];
     this.captureSamples = 0;
     this.vad.reset();
-    this.jitter.clear();
+    this.stopPlayback();
 
-    if (this.playbackTimer !== null) clearInterval(this.playbackTimer);
-    this.playbackTimer = null;
-
-    try { this.captureNode?.disconnect(); } catch {}
-    try { this.sourceNode?.disconnect(); } catch {}
-    try { this.zeroGain?.disconnect(); } catch {}
+    try {
+      this.captureNode?.disconnect();
+    } catch {}
+    try {
+      this.sourceNode?.disconnect();
+    } catch {}
+    try {
+      this.zeroGain?.disconnect();
+    } catch {}
 
     this.captureNode = null;
     this.sourceNode = null;
@@ -139,6 +199,23 @@ export class VoiceService {
     void this.outputCtx?.close().catch(() => undefined);
     this.inputCtx = null;
     this.outputCtx = null;
+    this.playbackBlockedValue = false;
+  }
+
+  stopPlayback(): void {
+    this.jitter.clear();
+    this.nextPlaybackTime = 0;
+    if (this.playbackTimer !== null) clearInterval(this.playbackTimer);
+    this.playbackTimer = null;
+    for (const source of this.scheduledSources) {
+      try {
+        source.stop();
+      } catch {}
+      try {
+        source.disconnect();
+      } catch {}
+    }
+    this.scheduledSources.clear();
   }
 
   setMuted(muted: boolean): void {
@@ -148,33 +225,110 @@ export class VoiceService {
     this.vad.reset();
   }
 
-  async play(frame: VoiceFrame): Promise<void> {
-    if (!this.outputCtx) {
-      this.outputCtx = new AudioContext();
-      await this.outputCtx.resume();
+  async enablePlayback(): Promise<boolean> {
+    try {
+      if (!this.outputCtx) this.outputCtx = new AudioContext();
+      await this.resumeContext(this.outputCtx);
+      this.playbackBlockedValue = false;
+      return true;
+    } catch {
+      this.playbackBlockedValue = true;
+      return false;
     }
+  }
 
-    this.jitter.push(frame);
+  async play(frame: VoiceFrame): Promise<boolean> {
+    const pcm16 = decodeInboundVoiceFrame(frame, this.profile);
+    if (!(await this.enablePlayback())) return false;
 
-    if (this.playbackTimer === null) {
-      this.nextPlaybackTime = this.outputCtx.currentTime + this.profile.voice.jitterTargetMs / 1000;
-      this.playbackTimer = setInterval(() => this.flushPlayback(), this.profile.voice.frameMs);
+    this.jitter.push({
+      seq: frame.seq,
+      frame,
+      pcm16,
+      receivedAt: performance.now(),
+    });
+
+    if (this.playbackTimer === null && this.outputCtx) {
+      this.nextPlaybackTime =
+        this.outputCtx.currentTime + this.profile.voice.jitterTargetMs / 1000;
+      this.playbackTimer = setInterval(
+        () => this.flushPlayback(),
+        this.profile.voice.frameMs,
+      );
     }
+    return true;
+  }
+
+  private async requestMicrophone(): Promise<MediaStream> {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "OverconstrainedError") {
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+        } catch (fallbackErr) {
+          throw voiceError("microphone_constraints", fallbackErr);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async resumeContext(ctx: AudioContext): Promise<void> {
+    if (ctx.state !== "running") await ctx.resume();
+    if (ctx.state !== "running")
+      throw new Error("Audio playback is blocked. Tap Enable audio and retry.");
   }
 
   private flushPlayback(): void {
     if (!this.outputCtx) return;
 
-    const frame = this.jitter.pop();
-    if (!frame) return;
+    const maxLatencyMs = this.profile.voice.maxQueuedLatencyMs;
+    const maxLeadSeconds = maxLatencyMs / 1000;
+    if (this.nextPlaybackTime - this.outputCtx.currentTime > maxLeadSeconds) {
+      this.jitter.clear();
+      this.nextPlaybackTime =
+        this.outputCtx.currentTime + this.profile.voice.jitterTargetMs / 1000;
+      this.onDrop("playback_lead_reset");
+      return;
+    }
 
-    const floats = pcm16ToFloat(payloadToBytes(frame.pcm16));
-    const buffer = this.outputCtx.createBuffer(1, floats.length, frame.sampleRate);
+    let item = this.jitter.pop();
+    while (item && performance.now() - item.receivedAt > maxLatencyMs) {
+      this.onDrop("playback_stale");
+      item = this.jitter.pop();
+    }
+    if (!item) return;
+
+    const frame = item.frame;
+    const floats = pcm16ToFloat(item.pcm16);
+    const buffer = this.outputCtx.createBuffer(
+      1,
+      floats.length,
+      frame.sampleRate,
+    );
     buffer.copyToChannel(floats, 0);
 
     const source = this.outputCtx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.outputCtx.destination);
+    this.scheduledSources.add(source);
+    source.onended = () => {
+      this.scheduledSources.delete(source);
+      try {
+        source.disconnect();
+      } catch {}
+    };
 
     const startAt = Math.max(this.outputCtx.currentTime, this.nextPlaybackTime);
     source.start(startAt);
@@ -201,10 +355,7 @@ export class VoiceService {
   }
 
   private framesAllowedByVoiceMode(frame: Float32Array): Float32Array[] {
-    if (this.profile.voice.mode === "maximum_privacy") {
-      return [frame];
-    }
-
+    if (this.profile.voice.mode === "maximum_privacy") return [frame];
     const decision = this.vad.process(frame);
     return decision.send ? decision.frames : [];
   }
@@ -214,9 +365,65 @@ export class VoiceService {
       enabled: profile.voice.vadEnabled && profile.voice.mode === "efficient",
       startDb: profile.voice.vadStartDb,
       stopDb: profile.voice.vadStopDb,
-      preRollFrames: framesFromMs(profile.voice.vadPreRollMs, profile.voice.frameMs),
-      hangoverFrames: framesFromMs(profile.voice.vadHangoverMs, profile.voice.frameMs),
-      minSpeechFrames: framesFromMs(profile.voice.vadMinSpeechMs, profile.voice.frameMs)
+      preRollFrames: framesFromMs(
+        profile.voice.vadPreRollMs,
+        profile.voice.frameMs,
+      ),
+      hangoverFrames: framesFromMs(
+        profile.voice.vadHangoverMs,
+        profile.voice.frameMs,
+      ),
+      minSpeechFrames: framesFromMs(
+        profile.voice.vadMinSpeechMs,
+        profile.voice.frameMs,
+      ),
     };
   }
+}
+
+export function decodeInboundVoiceFrame(
+  frame: VoiceFrame,
+  profile: TransportProfile,
+): Uint8Array {
+  if (
+    frame.streamId !== "voice" ||
+    !Number.isSafeInteger(frame.seq) ||
+    frame.seq <= 0 ||
+    !Number.isSafeInteger(frame.sampleRate) ||
+    frame.sampleRate < 8_000 ||
+    frame.sampleRate > 192_000 ||
+    frame.frameMs !== profile.voice.frameMs
+  ) {
+    throw new Error("Invalid voice frame metadata");
+  }
+  const pcm16 = payloadToBytes(frame.pcm16);
+  const expectedSamples = Math.max(
+    320,
+    Math.floor((frame.sampleRate * frame.frameMs) / 1000),
+  );
+  if (pcm16.byteLength !== expectedSamples * 2) {
+    throw new Error("Invalid voice frame payload");
+  }
+  return pcm16;
+}
+
+function voiceError(stage: string, err: unknown): Error {
+  const suffix = err instanceof Error ? err.message : String(err);
+  if (err instanceof DOMException) {
+    switch (err.name) {
+      case "NotAllowedError":
+        return new Error(
+          `${stage}: microphone access was denied by Android or browser site permissions`,
+        );
+      case "NotFoundError":
+        return new Error(`${stage}: no usable microphone was found`);
+      case "NotReadableError":
+        return new Error(`${stage}: the microphone is busy or unavailable`);
+      case "OverconstrainedError":
+        return new Error(
+          `${stage}: requested microphone settings are unsupported`,
+        );
+    }
+  }
+  return new Error(`${stage}: ${suffix}`);
 }
