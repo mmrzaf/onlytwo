@@ -5,51 +5,116 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag, for example v1.2.3 or v1.2.3-rc.1"
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  test:
+  validate-release:
+    name: Validate release metadata
     runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      image: ${{ steps.release.outputs.image }}
+
+    steps:
+      - name: Validate version and image name
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG"
+            echo "Expected: v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  build-client:
+    name: Test and build client
+    runs-on: ubuntu-latest
+    needs: validate-release
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: actions/checkout@v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
-      - name: Test server
+      - name: Install dependencies
+        actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Test client
+        working-directory: client
+        run: npm test -- --run
+
+      - name: Build client
+        working-directory: client
+        run: npm run build
+
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-dist
+          path: client/dist
+          if-no-files-found: error
+
+  test-server:
+    name: Test server
+    runs-on: ubuntu-latest
+    needs: build-client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download client artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: client/dist
+
+      - name: Test and vet server
         run: |
           go test ./...
           go vet ./...
           go test -race ./internal/session ./internal/http ./internal/ws
 
-      - name: Test and build client
-        working-directory: client
-        run: |
-          npm ci
-          npm test -- --run
-          npm run build
-
   build-binaries:
-    needs: test
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    needs: test-server
+
     strategy:
       fail-fast: false
       matrix:
@@ -72,26 +137,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - name: Download client artifact
+        uses: actions/download-artifact@v8
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      - name: Build client
-        working-directory: client
-        run: |
-          npm ci
-          npm run build
+          name: client-dist
+          path: client/dist
 
       - name: Build server binary
         env:
@@ -101,27 +159,49 @@ jobs:
           GOTOOLCHAIN: local
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w" \
+
+          go build \
+            -trimpath \
+            -ldflags "-s -w" \
             -o "dist/onlytwo-server_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}" \
             ./cmd/onlytwo-server
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
 
   build-docker:
+    name: Build and push Docker image
     runs-on: ubuntu-latest
-    needs: build-binaries
+    needs:
+      - validate-release
+      - test-server
+
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Download client artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: client/dist
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -129,43 +209,58 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.image }}
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ needs.validate-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.validate-release.outputs.tag }},enable=${{ !contains(needs.validate-release.outputs.tag, '-') }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
+          platforms: |
+            linux/amd64
+            linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   create-release:
+    name: Create GitHub release
     runs-on: ubuntu-latest
     needs:
+      - validate-release
       - build-binaries
       - build-docker
 
+    permissions:
+      contents: write
+
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v8
         with:
-          path: artifacts
+          pattern: binary-*
+          path: release
+          merge-multiple: true
 
-      - name: Flatten artifacts into release directory
+      - name: Generate checksums
         run: |
-          mkdir -p release
-          find artifacts -type f -exec cp -f {} release/ \;
-          ls -la release
+          cd release
+          sha256sum onlytwo-server_* > SHA256SUMS
+          ls -la
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.validate-release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: release/*
           generate_release_notes: true
+          prerelease: ${{ contains(needs.validate-release.outputs.tag, '-') }}
