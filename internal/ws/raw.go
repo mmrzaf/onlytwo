@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,15 +29,20 @@ type rawWSConn struct {
 	reader  *bufio.Reader
 	limit   int64
 	onPong  func(string) error
+	writeMu sync.Mutex
 }
 
-func upgradeRaw(w http.ResponseWriter, r *http.Request) (*rawWSConn, error) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+func upgradeRaw(w http.ResponseWriter, r *http.Request, selectedProtocol string) (*rawWSConn, error) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || !headerHasToken(r.Header.Values("Connection"), "upgrade") {
 		return nil, errors.New("not a websocket upgrade")
 	}
-	key := r.Header.Get("Sec-WebSocket-Key")
-	if key == "" {
-		return nil, errors.New("missing websocket key")
+	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
+	decodedKey, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(decodedKey) != 16 {
+		return nil, errors.New("invalid websocket key")
+	}
+	if strings.TrimSpace(r.Header.Get("Sec-WebSocket-Version")) != "13" {
+		return nil, errors.New("unsupported websocket version")
 	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -46,7 +53,11 @@ func upgradeRaw(w http.ResponseWriter, r *http.Request) (*rawWSConn, error) {
 		return nil, err
 	}
 	accept := websocketAccept(key)
-	_, err = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+	protocolHeader := ""
+	if selectedProtocol != "" {
+		protocolHeader = fmt.Sprintf("Sec-WebSocket-Protocol: %s\r\n", selectedProtocol)
+	}
+	_, err = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n%s\r\n", accept, protocolHeader)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -56,6 +67,17 @@ func upgradeRaw(w http.ResponseWriter, r *http.Request) (*rawWSConn, error) {
 		return nil, err
 	}
 	return &rawWSConn{netConn: conn, reader: rw.Reader, limit: 1024 * 1024}, nil
+}
+
+func headerHasToken(values []string, target string) bool {
+	for _, value := range values {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), target) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func websocketAccept(key string) string {
@@ -83,11 +105,17 @@ func (c *rawWSConn) ReadMessage() (int, []byte, error) {
 		case wsCloseMessage:
 			return wsCloseMessage, nil, io.EOF
 		case wsPingMessage:
-			_ = c.WriteMessage(wsPongMessage, payload)
+			if err := c.WriteMessage(wsPongMessage, payload); err != nil {
+				return 0, nil, err
+			}
 		case wsPongMessage:
 			if c.onPong != nil {
-				_ = c.onPong(string(payload))
+				if err := c.onPong(string(payload)); err != nil {
+					return 0, nil, err
+				}
 			}
+		default:
+			return 0, nil, errors.New("unsupported websocket opcode")
 		}
 	}
 }
@@ -97,9 +125,22 @@ func (c *rawWSConn) readFrame() (int, []byte, error) {
 	if _, err := io.ReadFull(c.reader, hdr[:]); err != nil {
 		return 0, nil, err
 	}
+	if hdr[0]&0x70 != 0 {
+		return 0, nil, errors.New("websocket RSV bits are not supported")
+	}
 	fin := hdr[0]&0x80 != 0
 	opcode := int(hdr[0] & 0x0f)
 	masked := hdr[1]&0x80 != 0
+	if !masked {
+		return 0, nil, errors.New("client websocket frames must be masked")
+	}
+	if !validOpcode(opcode) {
+		return 0, nil, errors.New("unsupported websocket opcode")
+	}
+	if !fin {
+		return 0, nil, errors.New("fragmented websocket frames are not supported")
+	}
+
 	length := uint64(hdr[1] & 0x7f)
 	if length == 126 {
 		var ext [2]byte
@@ -113,32 +154,53 @@ func (c *rawWSConn) readFrame() (int, []byte, error) {
 			return 0, nil, err
 		}
 		length = binary.BigEndian.Uint64(ext[:])
-	}
-	if c.limit > 0 && int64(length) > c.limit {
-		return 0, nil, errors.New("websocket frame too large")
-	}
-	var mask [4]byte
-	if masked {
-		if _, err := io.ReadFull(c.reader, mask[:]); err != nil {
-			return 0, nil, err
+		if length&(1<<63) != 0 {
+			return 0, nil, errors.New("invalid websocket frame length")
 		}
 	}
-	payload := make([]byte, length)
+	if opcode >= wsCloseMessage && length > 125 {
+		return 0, nil, errors.New("websocket control frame too large")
+	}
+	if opcode == wsCloseMessage && length == 1 {
+		return 0, nil, errors.New("invalid websocket close payload")
+	}
+	if c.limit > 0 && length > uint64(c.limit) {
+		return 0, nil, errors.New("websocket frame too large")
+	}
+	if length > uint64(math.MaxInt) {
+		return 0, nil, errors.New("websocket frame too large")
+	}
+
+	var mask [4]byte
+	if _, err := io.ReadFull(c.reader, mask[:]); err != nil {
+		return 0, nil, err
+	}
+	payload := make([]byte, int(length))
 	if _, err := io.ReadFull(c.reader, payload); err != nil {
 		return 0, nil, err
 	}
-	if masked {
-		for i := range payload {
-			payload[i] ^= mask[i%4]
-		}
-	}
-	if !fin {
-		return 0, nil, errors.New("fragmented websocket frames are not supported")
+	for i := range payload {
+		payload[i] ^= mask[i%4]
 	}
 	return opcode, payload, nil
 }
 
+func validOpcode(opcode int) bool {
+	switch opcode {
+	case wsTextMessage, wsBinaryMessage, wsCloseMessage, wsPingMessage, wsPongMessage:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *rawWSConn) WriteMessage(opcode int, payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writeMessageLocked(opcode, payload)
+}
+
+func (c *rawWSConn) writeMessageLocked(opcode int, payload []byte) error {
 	var header [10]byte
 	header[0] = 0x80 | byte(opcode&0x0f)
 	var n int
