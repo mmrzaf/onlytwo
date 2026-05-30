@@ -1,6 +1,5 @@
 import {
   getProfile,
-  supportedProfileIds,
   type LaneName,
   type TransportProfile,
   type TransportProfileId,
@@ -14,6 +13,7 @@ import {
 import { FileSender, type SenderSnapshot } from "../features/file/FileSender";
 import { createTextMessage } from "../features/text/TextService";
 import { VoiceService, type VoiceFrame } from "../features/audio/VoiceService";
+import { VoiceFreshnessQueue } from "../features/audio/VoiceQueue";
 import {
   APP_VERSION,
   decodeHandshake,
@@ -23,32 +23,47 @@ import {
   type HandshakeMessage,
 } from "../protocol/appMessages";
 import { OuterType, type Envelope } from "../protocol/envelope";
-import {
-  negotiateProfile,
-  profileHash,
-  verificationPhrase,
-} from "../protocol/negotiation";
+import type { RelayEvent } from "../protocol/relayControl";
+import { profileHash, verificationPhrase } from "../protocol/negotiation";
+import { createRoom as createRelayRoom, lookupRoom } from "../protocol/rooms";
 import {
   ReliableChannel,
   isReliableEnvelope,
   shouldSendReliably,
 } from "../protocol/reliable";
+import { validateInboundStream } from "../protocol/streams";
 import {
   WebSocketConnection,
   type ConnectionStatus,
 } from "../transport/WebSocketConnection";
 import { base64UrlToBytes, bytesToBase64Url } from "../utils/bytes";
-import { generateRoomCode, makeId, normalizeRoomCode } from "../utils/ids";
+import { makeId, normalizeRoomCode } from "../utils/ids";
 import type { SessionViewState, StateListener, TransferView } from "./types";
 
-const MAX_SYSTEM_ITEMS = 5;
+const MAX_TRANSCRIPT_ITEMS = 500;
+const MAX_RETAINED_TRANSFERS = 30;
+const END_SESSION_FALLBACK_MS = 1500;
 
 export class SessionController {
   private profile: TransportProfile = getProfile("balanced");
   private crypto = new CryptoClient();
   private secure: SecureChannel | null = null;
   private transport = new WebSocketConnection(this.profile);
-  private voice = new VoiceService(this.profile);
+  private voice = new VoiceService(this.profile, (reason) =>
+    this.transport.recordVoiceDrop(reason),
+  );
+  private outboundVoice = this.createVoiceQueue<VoiceFrame>();
+  private inboundVoice = this.createVoiceQueue<Envelope>();
+  private outboundVoicePumping = false;
+  private inboundVoiceScheduled = false;
+  private voiceQueueEpoch = 0;
+  private inboundSerial: Promise<unknown> = Promise.resolve();
+  private epochPreparation: Promise<void> | null = null;
+  private lifecycleEpoch = 0;
+  private secureEpoch = 0;
+  private startupInFlight = false;
+  private endSessionTimer: ReturnType<typeof setTimeout> | null = null;
+  private remoteVoiceActive = false;
 
   private sender = new FileSender(
     this.profile,
@@ -82,6 +97,7 @@ export class SessionController {
     onFailed: (_reliableId, trackingId, reason) => {
       if (trackingId) this.updateTranscriptStatus(trackingId, "failed");
       this.patch({ notice: reason });
+      this.addSystem(reason, "error");
     },
   });
 
@@ -95,14 +111,30 @@ export class SessionController {
     notice: null,
     voice: "idle",
     muted: false,
+    audioPlaybackBlocked: false,
     invalidPackets: 0,
     transcript: [],
     transfers: [],
   };
 
   constructor() {
-    this.transport.onStatus((status) => this.onConnectionStatus(status));
-    this.transport.onEnvelope((env) => void this.onEnvelope(env));
+    this.transport.onStatus((status) => {
+      const lifecycle = this.lifecycleEpoch;
+      this.enqueueInbound(() =>
+        lifecycle === this.lifecycleEpoch
+          ? this.onConnectionStatus(status)
+          : undefined,
+      );
+    });
+    this.transport.onRelayEvent((event) => {
+      const lifecycle = this.lifecycleEpoch;
+      this.enqueueInbound(() =>
+        lifecycle === this.lifecycleEpoch
+          ? this.onRelayEvent(event)
+          : undefined,
+      );
+    });
+    this.transport.onEnvelope((env) => this.routeEnvelope(env));
     window.addEventListener("beforeunload", () => this.disconnect(true));
   }
 
@@ -113,25 +145,50 @@ export class SessionController {
   }
 
   setProfile(id: TransportProfileId): void {
-    if (this.state.phase !== "idle") return;
+    if (this.state.phase !== "idle" && this.state.phase !== "ended") return;
 
     this.profile = getProfile(id);
     this.transport.setProfile(this.profile);
     this.voice.setProfile(this.profile);
     this.sender.setProfile(this.profile);
     this.receiver.setProfile(this.profile);
+    this.updateVoiceQueueLimits();
 
     this.patch({ profileId: id });
   }
 
   async createRoom(): Promise<void> {
-    await this.start(generateRoomCode(), "creating");
+    if (this.startupInFlight) return;
+    this.startupInFlight = true;
+    try {
+      this.patch({ phase: "creating", notice: "Creating room…" });
+      const room = await createRelayRoom(this.state.profileId);
+      await this.start(room.code, "creating", room.profileId);
+    } catch (err) {
+      this.disconnect(true);
+      this.patch({ phase: "idle", roomCode: "", notice: errorMessage(err) });
+      throw err;
+    } finally {
+      this.startupInFlight = false;
+    }
   }
 
   async joinRoom(rawCode: string): Promise<void> {
+    if (this.startupInFlight) return;
     const code = normalizeRoomCode(rawCode);
-    if (code.length < 9) throw new Error("Enter the full room code");
-    await this.start(code, "joining");
+    if (code.length !== 9) throw new Error("Enter the full room code");
+    this.startupInFlight = true;
+    try {
+      this.patch({ phase: "joining", notice: "Looking up room…" });
+      const room = await lookupRoom(code);
+      await this.start(room.code, "joining", room.profileId);
+    } catch (err) {
+      this.disconnect(true);
+      this.patch({ phase: "idle", roomCode: "", notice: errorMessage(err) });
+      throw err;
+    } finally {
+      this.startupInFlight = false;
+    }
   }
 
   async sendText(body: string): Promise<void> {
@@ -206,26 +263,45 @@ export class SessionController {
     this.startNextQueuedFileIfAllowed();
   }
 
+  removeFile(fileId: string): void {
+    const transfer = this.state.transfers.find(
+      (item) => item.fileId === fileId,
+    );
+    if (
+      !transfer ||
+      !["completed", "cancelled", "failed"].includes(transfer.state)
+    )
+      return;
+    this.sender.remove(fileId);
+    this.receiver.remove(fileId);
+    this.removeTransferView(fileId);
+    this.emit();
+  }
+
   async startVoice(): Promise<void> {
     if (!this.secure) {
       this.patch({ notice: "Encryption is not ready." });
       return;
     }
-
     if (this.state.voice !== "idle") return;
 
-    this.sender.setGlobalPaused(true, "paused during voice");
-    this.patch({ voice: "starting", notice: "Starting voice…" });
+    this.clearVoiceQueues();
+    this.patch({
+      voice: "starting",
+      audioPlaybackBlocked: false,
+      notice: "Starting voice…",
+    });
+    this.updateFilePauseForVoice();
 
     try {
-      await this.voice.start((frame) => void this.sendVoiceFrame(frame));
-
+      await this.voice.start((frame) => this.queueOutboundVoice(frame));
       this.patch({
         voice: "active",
         muted: false,
+        audioPlaybackBlocked: false,
         notice: "Voice active. Files are paused.",
       });
-
+      this.addSystem("Voice started.");
       await this.sendApp(
         {
           kind: "voice.start",
@@ -237,47 +313,51 @@ export class SessionController {
         "control",
       );
     } catch (err) {
+      this.clearVoiceQueues();
       this.voice.stop();
-      this.sender.setGlobalPaused(false);
-
+      const reason = err instanceof Error ? err.message : "Voice failed";
       this.patch({
         voice: "failed",
-        notice: err instanceof Error ? err.message : "Voice failed",
+        notice: reason,
       });
-
+      this.updateFilePauseForVoice();
+      this.addSystem(`Voice unavailable: ${reason}`, "error");
       setTimeout(() => {
-        if (this.state.voice === "failed") {
-          this.patch({ voice: "idle" });
-        }
+        if (this.state.voice === "failed") this.patch({ voice: "idle" });
       }, 2500);
     }
   }
 
   async stopVoice(): Promise<void> {
     if (this.state.voice === "idle") return;
-
+    this.clearVoiceQueues();
     this.voice.stop();
     await this.sendApp({ kind: "voice.stop", streamId: "voice" }, "control");
-
     this.patch({
       voice: "idle",
       muted: false,
+      audioPlaybackBlocked: false,
       notice: "Voice ended.",
     });
-
-    this.sender.setGlobalPaused(false);
-    this.startNextQueuedFileIfAllowed();
+    this.updateFilePauseForVoice();
+    this.addSystem("Voice ended.");
   }
 
   toggleMute(): void {
     if (this.state.voice !== "active" && this.state.voice !== "muted") return;
-
     const muted = !this.state.muted;
     this.voice.setMuted(muted);
+    if (muted) this.clearOutboundVoiceQueue();
+    this.patch({ muted, voice: muted ? "muted" : "active" });
+  }
 
+  async enableAudioPlayback(): Promise<void> {
+    const enabled = await this.voice.enablePlayback();
     this.patch({
-      muted,
-      voice: muted ? "muted" : "active",
+      audioPlaybackBlocked: !enabled,
+      notice: enabled
+        ? "Audio playback enabled."
+        : "Audio playback is still blocked by this browser.",
     });
   }
 
@@ -293,8 +373,9 @@ export class SessionController {
     if (!matches) {
       this.patch({
         security: "verification_failed",
-        notice: "Verification mismatch. Leave this room.",
+        notice: "Verification mismatch. End this chat.",
       });
+      this.addSystem("Verification mismatch. End this chat.", "error");
       return;
     }
 
@@ -303,20 +384,47 @@ export class SessionController {
       notice: "Verified on this device.",
     });
 
+    this.addSystem("Secure session verified.");
     await this.sendApp({ kind: "session.verified", at: Date.now() }, "control");
   }
 
-  disconnect(silent = false): void {
+  endChatForBoth(): void {
+    if (this.state.phase === "idle" || this.state.phase === "ended") return;
+    if (this.endSessionTimer) clearTimeout(this.endSessionTimer);
+    const sent = this.transport.endSession();
+    if (!sent) {
+      this.disconnect(false, true, "Chat ended on this device.");
+      return;
+    }
+    this.patch({ notice: "Ending chat for both…" });
+    this.endSessionTimer = setTimeout(() => {
+      this.endSessionTimer = null;
+      this.disconnect(false, true, "Chat ended for both.");
+    }, END_SESSION_FALLBACK_MS);
+  }
+
+  disconnect(
+    silent = false,
+    forgetSlot = false,
+    notice = "Room closed on this device.",
+  ): void {
+    this.lifecycleEpoch += 1;
+    this.secureEpoch += 1;
+    if (this.endSessionTimer) clearTimeout(this.endSessionTimer);
+    this.endSessionTimer = null;
     this.establishing = false;
     this.initialHandshakeSent = false;
     this.replyHandshakeSent = false;
+    this.epochPreparation = null;
 
+    this.remoteVoiceActive = false;
+    this.clearVoiceQueues();
     this.voice.stop();
-    this.sender.setGlobalPaused(true, "disconnected");
-    this.transport.disconnect();
+    this.sender.reset();
+    this.receiver.reset();
+    this.transport.disconnect({ forgetSlot });
 
     void this.crypto.reset().catch(() => undefined);
-
     this.secure = null;
     this.localPublicKey = null;
     this.peerPublicKey = null;
@@ -332,7 +440,10 @@ export class SessionController {
         safetyPhrase: null,
         voice: "idle",
         muted: false,
-        notice: "Room closed.",
+        audioPlaybackBlocked: false,
+        notice,
+        transcript: [],
+        transfers: [],
       });
     }
   }
@@ -340,16 +451,20 @@ export class SessionController {
   private async start(
     code: string,
     phase: "creating" | "joining",
+    selectedProfileId: TransportProfileId,
   ): Promise<void> {
     this.disconnect(true);
+    const lifecycle = this.lifecycleEpoch;
 
-    this.profile = getProfile(this.state.profileId);
+    this.profile = getProfile(selectedProfileId);
     this.transport.setProfile(this.profile);
     this.voice.setProfile(this.profile);
     this.sender.setProfile(this.profile);
     this.receiver.setProfile(this.profile);
+    this.updateVoiceQueueLimits();
 
     this.transferOrder = [];
+    this.remoteVoiceActive = false;
     this.reliable.reset();
     this.initialHandshakeSent = false;
     this.replyHandshakeSent = false;
@@ -358,6 +473,7 @@ export class SessionController {
     this.patch({
       phase,
       roomCode: code,
+      profileId: selectedProfileId,
       connection: "connecting",
       security: "none",
       safetyPhrase: null,
@@ -370,62 +486,195 @@ export class SessionController {
       invalidPackets: 0,
       voice: "idle",
       muted: false,
+      audioPlaybackBlocked: false,
     });
 
     await this.crypto.configure(this.profile);
-    this.localPublicKey = await this.crypto.generateIdentity();
+    const localPublicKey = await this.crypto.generateIdentity();
+    if (lifecycle !== this.lifecycleEpoch) return;
+    this.localPublicKey = localPublicKey;
     await this.transport.connect(code);
+    if (lifecycle !== this.lifecycleEpoch) return;
 
-    this.patch({
-      phase: "waiting",
-      notice: "Waiting for the other person.",
-    });
-
+    this.patch({ phase: "waiting", notice: "Waiting for the other person." });
     await this.sendInitialHandshake();
   }
 
-  private onConnectionStatus(status: ConnectionStatus): void {
+  private async onConnectionStatus(status: ConnectionStatus): Promise<void> {
     this.patch({ connection: status });
 
-    if (
-      status === "connected" &&
-      this.localPublicKey &&
-      !this.secure &&
-      !this.initialHandshakeSent
-    ) {
-      void this.sendInitialHandshake();
-    }
-
     if (status === "reconnecting") {
-      this.sender.setGlobalPaused(true, "reconnecting");
-      this.patch({ notice: "Reconnecting…" });
+      await this.prepareFreshCryptoEpoch(
+        "Connection interrupted. Reconnecting securely…",
+      );
+      return;
     }
 
-    if (status === "connected" && !this.isVoiceActive()) {
-      this.sender.setGlobalPaused(false);
-      this.startNextQueuedFileIfAllowed();
+    if (status === "connected") {
+      if (!this.localPublicKey)
+        await this.prepareFreshCryptoEpoch(
+          "Establishing a fresh secure session…",
+        );
+      if (this.localPublicKey && !this.secure && !this.initialHandshakeSent)
+        await this.sendInitialHandshake();
+      this.updateFilePauseForVoice();
+      return;
     }
 
     if (status === "failed") {
-      this.patch({
-        phase: "failed",
-        notice: "Connection lost.",
-      });
+      this.patch({ phase: "failed", notice: "Connection lost." });
+      this.addSystem("Connection lost.", "error");
     }
   }
 
-  private async onEnvelope(env: Envelope): Promise<void> {
+  private async onRelayEvent(event: RelayEvent): Promise<void> {
+    switch (event.kind) {
+      case "peer.present":
+        if (this.secure || this.peerPublicKey || !this.localPublicKey) {
+          await this.prepareFreshCryptoEpoch(
+            "Establishing a fresh secure session…",
+          );
+        }
+        await this.sendInitialHandshake();
+        return;
+      case "peer.disconnected":
+        await this.prepareFreshCryptoEpoch(
+          "Peer disconnected. Waiting for rejoin…",
+        );
+        this.patch({
+          phase: "waiting",
+          notice: "Peer disconnected. Waiting for rejoin…",
+        });
+        this.addSystem("Peer disconnected. Waiting for rejoin.");
+        return;
+      case "peer.rejoined":
+        await this.prepareFreshCryptoEpoch(
+          "Peer rejoined. Establishing a new secure session…",
+        );
+        this.addSystem("Peer rejoined. New secure session started.");
+        await this.sendInitialHandshake();
+        return;
+      case "session.ended":
+        this.disconnect(false, true, "Chat ended for both.");
+        return;
+    }
+  }
+
+  private routeEnvelope(env: Envelope): void {
+    const epoch = this.secureEpoch;
+    if (env.outerType === OuterType.DATA && env.streamId === 4) {
+      this.queueInboundVoice(env, epoch);
+      return;
+    }
+    this.enqueueInbound(() => this.onEnvelope(env, epoch));
+  }
+
+  private queueInboundVoice(env: Envelope, epoch: number): void {
+    if (epoch !== this.secureEpoch || !this.secure) {
+      this.transport.recordVoiceDrop("before_decrypt");
+      return;
+    }
+    const dropped = this.inboundVoice.push(env);
+    if (dropped) this.transport.recordVoiceDrop("before_decrypt", dropped);
+    this.transport.recordVoiceQueueSize(this.inboundVoice.size);
+    this.scheduleInboundVoice();
+  }
+
+  private scheduleInboundVoice(): void {
+    if (this.inboundVoiceScheduled) return;
+    this.inboundVoiceScheduled = true;
+    this.enqueueInbound(() => this.processOneInboundVoice());
+  }
+
+  private async processOneInboundVoice(): Promise<void> {
+    try {
+      const next = this.inboundVoice.shiftFresh();
+      if (next.dropped)
+        this.transport.recordVoiceDrop("before_decrypt", next.dropped);
+      if (next.value) await this.onEnvelope(next.value, this.secureEpoch);
+    } finally {
+      this.inboundVoiceScheduled = false;
+      if (this.inboundVoice.size > 0) this.scheduleInboundVoice();
+    }
+  }
+
+  private enqueueInbound(task: () => Promise<void> | void): void {
+    const run = () => Promise.resolve(task());
+    const next = this.inboundSerial.then(run, run);
+    this.inboundSerial = next.catch((err) =>
+      console.warn("OnlyTwo inbound task failed", err),
+    );
+  }
+
+  private async prepareFreshCryptoEpoch(notice: string): Promise<void> {
+    if (this.epochPreparation) return this.epochPreparation;
+    const lifecycle = this.lifecycleEpoch;
+    const work = (async () => {
+      this.secureEpoch += 1;
+      this.establishing = false;
+      this.initialHandshakeSent = false;
+      this.replyHandshakeSent = false;
+      this.transport.clearQueuedPackets();
+      this.remoteVoiceActive = false;
+      this.clearVoiceQueues();
+      this.voice.stop();
+      this.sender.reset();
+      this.receiver.reset();
+      this.transferOrder = [];
+      this.reliable.failAll(
+        "Session changed. Unsent messages were not delivered.",
+      );
+      this.reliable.reset();
+      this.secure = null;
+      this.localPublicKey = null;
+      this.peerPublicKey = null;
+      this.cryptoSerial = Promise.resolve();
+      this.patch({
+        phase: "waiting",
+        security: "none",
+        safetyPhrase: null,
+        voice: "idle",
+        muted: false,
+        audioPlaybackBlocked: false,
+        transfers: [],
+        transcript: this.state.transcript.filter(
+          (item) => item.kind !== "file",
+        ),
+        notice,
+      });
+
+      await this.crypto.reset().catch(() => undefined);
+      if (lifecycle !== this.lifecycleEpoch) return;
+      await this.crypto.configure(this.profile);
+      const key = await this.crypto.generateIdentity();
+      if (lifecycle !== this.lifecycleEpoch) return;
+      this.localPublicKey = key;
+      if (this.transport.status === "connected")
+        await this.sendInitialHandshake();
+    })();
+    this.epochPreparation = work;
+    try {
+      await work;
+    } finally {
+      if (this.epochPreparation === work) this.epochPreparation = null;
+    }
+  }
+
+  private async onEnvelope(env: Envelope, epoch: number): Promise<void> {
+    if (epoch !== this.secureEpoch) return;
     try {
       if (env.outerType === OuterType.HANDSHAKE) {
+        if (env.streamId !== 0) throw new Error("Invalid handshake stream");
         await this.handleHandshake(env.payload);
         return;
       }
 
-      if (!this.secure) return;
+      const secure = this.secure;
+      if (!secure) return;
 
-      const message = await this.runCrypto(() =>
-        this.secure!.decryptAppMessage(env),
-      );
+      const message = await this.runCrypto(() => secure.decryptAppMessage(env));
+      if (epoch !== this.secureEpoch || secure !== this.secure) return;
+      validateInboundStream(message, env.streamId);
       await this.handleAppMessage(message);
     } catch (err) {
       this.state.invalidPackets += 1;
@@ -486,33 +735,40 @@ export class SessionController {
         await this.sendReplyHandshake();
       }
 
-      const negotiated = negotiateProfile(
-        this.profile.id,
-        hs.preferredProfile,
-        hs.supportedProfiles,
+      const expectedProfileHash = await profileHash(this.profile);
+      const missingFeatures = FEATURE_FLAGS.filter(
+        (flag) => !hs.featureFlags.includes(flag),
       );
-
-      this.profile = negotiated;
-      this.transport.setProfile(negotiated);
-      this.voice.setProfile(negotiated);
-      this.sender.setProfile(negotiated);
-      this.receiver.setProfile(negotiated);
+      if (
+        hs.appVersion !== APP_VERSION ||
+        hs.profileId !== this.profile.id ||
+        hs.profileHash !== expectedProfileHash ||
+        missingFeatures.length > 0
+      ) {
+        this.patch({
+          security: "verification_failed",
+          notice:
+            "This peer is using an incompatible OnlyTwo version. Refresh both browsers.",
+        });
+        this.addSystem(
+          "This peer is using an incompatible OnlyTwo version. Refresh both browsers.",
+          "error",
+        );
+        return;
+      }
 
       await this.runCrypto(async () => {
-        await this.crypto.configure(negotiated);
-        await this.crypto.establishSession(
-          peerKey,
-          await profileHash(negotiated),
-        );
+        await this.crypto.configure(this.profile);
+        await this.crypto.establishSession(peerKey, expectedProfileHash);
       });
 
-      this.secure = new SecureChannel(this.crypto, negotiated);
+      this.secure = new SecureChannel(this.crypto, this.profile);
       this.peerPublicKey = peerKey;
 
       const phrase = await verificationPhrase({
         localPublicKey: this.localPublicKey,
         peerPublicKey: peerKey,
-        profile: negotiated,
+        profile: this.profile,
         sessionCode: this.state.roomCode,
         peerAppVersion: hs.appVersion,
         peerFeatureFlags: hs.featureFlags,
@@ -520,13 +776,14 @@ export class SessionController {
 
       this.patch({
         phase: "active",
-        profileId: negotiated.id,
+        profileId: this.profile.id,
         security: "encrypted_unverified",
         safetyPhrase: phrase,
         notice: "Encrypted. Verify the phrase.",
+        invalidPackets: 0,
       });
 
-      this.addSystem("Encrypted");
+      this.addSystem("Secure session ready. Verify the safety phrase.");
     } finally {
       this.establishing = false;
     }
@@ -543,6 +800,7 @@ export class SessionController {
       case "session.verified":
         if (this.state.security !== "verified") {
           this.patch({ notice: "Peer marked this chat verified." });
+          this.addSystem("Peer marked the secure session as verified.");
         }
         return;
 
@@ -580,7 +838,7 @@ export class SessionController {
         return;
 
       case "file.nack":
-        this.sender.nack(message.fileId, message.index);
+        this.sender.nack(message.fileId, message.index, message.reason);
         return;
 
       case "file.pause":
@@ -602,25 +860,87 @@ export class SessionController {
         return;
 
       case "voice.start":
+        this.validateRemoteVoiceStart(message);
+        this.remoteVoiceActive = true;
         this.patch({ notice: "Peer started voice." });
-        this.sender.setGlobalPaused(true, "paused during voice");
+        this.addSystem("Peer started voice.");
+        this.updateFilePauseForVoice();
         return;
 
-      case "voice.frame":
-        await this.voice.play(message);
+      case "voice.frame": {
+        if (!this.remoteVoiceActive)
+          throw new Error("Voice frame received before voice start");
+        const playing = await this.voice.play(message);
+        if (!playing && !this.state.audioPlaybackBlocked) {
+          this.patch({
+            audioPlaybackBlocked: true,
+            notice: "Incoming voice is blocked. Tap Enable audio.",
+          });
+          this.addSystem(
+            "Incoming voice is blocked. Tap Enable audio.",
+            "error",
+          );
+        }
         return;
+      }
 
       case "voice.stop":
-        this.patch({ notice: "Peer ended voice." });
-        this.sender.setGlobalPaused(false);
-        this.startNextQueuedFileIfAllowed();
+        if (message.streamId !== "voice")
+          throw new Error("Invalid voice stream metadata");
+        this.remoteVoiceActive = false;
+        this.inboundVoice.clear();
+        this.voice.stopPlayback();
+        this.patch({
+          audioPlaybackBlocked: false,
+          notice: "Peer ended voice.",
+        });
+        this.updateFilePauseForVoice();
+        this.addSystem("Peer ended voice.");
         return;
     }
   }
 
-  private async sendVoiceFrame(frame: VoiceFrame): Promise<void> {
-    if (!this.secure || this.state.voice === "idle") return;
-    await this.sendApp({ kind: "voice.frame", ...frame }, "voice");
+  private queueOutboundVoice(frame: VoiceFrame): void {
+    if (!this.secure || this.state.voice === "idle" || this.state.muted) return;
+    const dropped = this.outboundVoice.push(frame);
+    if (dropped) this.transport.recordVoiceDrop("before_encrypt", dropped);
+    this.transport.recordVoiceQueueSize(this.outboundVoice.size);
+    void this.pumpOutboundVoice();
+  }
+
+  private async pumpOutboundVoice(): Promise<void> {
+    if (this.outboundVoicePumping) return;
+    this.outboundVoicePumping = true;
+    const epoch = this.voiceQueueEpoch;
+    try {
+      while (
+        epoch === this.voiceQueueEpoch &&
+        this.secure &&
+        this.state.voice !== "idle" &&
+        !this.state.muted
+      ) {
+        const next = this.outboundVoice.shiftFresh();
+        if (next.dropped)
+          this.transport.recordVoiceDrop("before_encrypt", next.dropped);
+        if (!next.value) return;
+        if (!this.transport.canSendVoiceNow()) {
+          const dropped = 1 + this.outboundVoice.clear();
+          this.transport.recordVoiceDrop("before_encrypt", dropped);
+          return;
+        }
+        await this.sendRawApp({ kind: "voice.frame", ...next.value }, "voice");
+      }
+    } finally {
+      this.outboundVoicePumping = false;
+      if (
+        epoch === this.voiceQueueEpoch &&
+        this.outboundVoice.size > 0 &&
+        this.state.voice !== "idle" &&
+        !this.state.muted
+      ) {
+        void this.pumpOutboundVoice();
+      }
+    }
   }
 
   private async sendApp(
@@ -636,13 +956,23 @@ export class SessionController {
     return this.sendRawApp(message, lane);
   }
 
-  private async sendRawApp(message: AppMessage, lane: LaneName): Promise<boolean> {
-    if (!this.secure) return false;
+  private async sendRawApp(
+    message: AppMessage,
+    lane: LaneName,
+  ): Promise<boolean> {
+    const secure = this.secure;
+    const epoch = this.secureEpoch;
+    if (!secure) return false;
+    if (lane === "voice" && !this.transport.canSendVoiceNow()) {
+      this.transport.recordVoiceDrop("before_encrypt");
+      return false;
+    }
 
     try {
       const env = await this.runCrypto(() =>
-        this.secure!.encryptAppMessage(message, lane),
+        secure.encryptAppMessage(message, lane),
       );
+      if (epoch !== this.secureEpoch || secure !== this.secure) return false;
       return this.transport.send(env);
     } catch (err) {
       console.warn("OnlyTwo send failed", err);
@@ -663,19 +993,33 @@ export class SessionController {
   }
 
   private async sendHandshake(): Promise<void> {
-    if (!this.localPublicKey) return;
+    const localPublicKey = this.localPublicKey;
+    const lifecycle = this.lifecycleEpoch;
+    const epoch = this.secureEpoch;
+    const profile = this.profile;
+    if (!localPublicKey) return;
+
+    const profileHashValue = await profileHash(profile);
+    if (
+      lifecycle !== this.lifecycleEpoch ||
+      epoch !== this.secureEpoch ||
+      localPublicKey !== this.localPublicKey ||
+      profile !== this.profile
+    ) {
+      return;
+    }
 
     const hs: HandshakeMessage = {
       kind: "handshake.v2",
-      publicKey: bytesToBase64Url(this.localPublicKey),
-      preferredProfile: this.profile.id,
-      supportedProfiles: supportedProfileIds(),
+      publicKey: bytesToBase64Url(localPublicKey),
+      profileId: profile.id,
+      profileHash: profileHashValue,
       appVersion: APP_VERSION,
       featureFlags: [...FEATURE_FLAGS],
     };
 
     const env: Envelope = {
-      protocolVersion: this.profile.protocolVersion,
+      protocolVersion: profile.protocolVersion,
       outerType: OuterType.HANDSHAKE,
       flags: 0,
       streamId: 0,
@@ -686,7 +1030,9 @@ export class SessionController {
       lane: "control",
     };
 
-    this.transport.send(env);
+    if (!this.transport.send(env)) {
+      throw new Error("Could not queue secure handshake");
+    }
   }
 
   private updateSender(snapshot: SenderSnapshot): void {
@@ -734,7 +1080,51 @@ export class SessionController {
       .map((id) => existing.get(id))
       .filter(Boolean) as TransferView[];
 
+    if (
+      !this.state.transcript.some(
+        (item) => item.kind === "file" && item.fileId === view.fileId,
+      )
+    ) {
+      this.state.transcript = trimTranscript([
+        ...this.state.transcript,
+        {
+          id: makeId("file"),
+          kind: "file",
+          from: view.direction === "send" ? "me" : "peer",
+          text: view.name,
+          at: Date.now(),
+          fileId: view.fileId,
+        },
+      ]);
+    }
+
+    this.trimRetainedTransfers();
     this.emit();
+  }
+
+  private removeTransferView(fileId: string): void {
+    this.state.transfers = this.state.transfers.filter(
+      (item) => item.fileId !== fileId,
+    );
+    this.state.transcript = this.state.transcript.filter(
+      (item) => !(item.kind === "file" && item.fileId === fileId),
+    );
+    this.transferOrder = this.transferOrder.filter((id) => id !== fileId);
+  }
+
+  private trimRetainedTransfers(): void {
+    const retained = this.transferOrder.filter((id) =>
+      this.state.transfers.some(
+        (item) =>
+          item.fileId === id &&
+          ["completed", "cancelled", "failed"].includes(item.state),
+      ),
+    );
+    for (const fileId of retained.slice(MAX_RETAINED_TRANSFERS)) {
+      this.sender.remove(fileId);
+      this.receiver.remove(fileId);
+      this.removeTransferView(fileId);
+    }
   }
 
   private ensureTransferOrder(fileId: string): void {
@@ -763,13 +1153,15 @@ export class SessionController {
   }
 
   private startNextQueuedFileIfAllowed(): void {
-    if (this.isVoiceActive()) return;
+    if (this.isVoiceActive() || this.remoteVoiceActive) return;
     if (this.state.connection !== "connected") return;
 
-    const queued = this.state.transfers.find(
-      (transfer) =>
-        transfer.direction === "send" && transfer.state === "queued",
-    );
+    const queued = [...this.state.transfers]
+      .reverse()
+      .find(
+        (transfer) =>
+          transfer.direction === "send" && transfer.state === "queued",
+      );
 
     if (!queued) return;
     if (this.hasActiveSendingFileExceptQueued(queued.fileId)) return;
@@ -785,7 +1177,10 @@ export class SessionController {
     );
   }
 
-  private updateTranscriptStatus(id: string, status: "sending" | "sent" | "failed"): void {
+  private updateTranscriptStatus(
+    id: string,
+    status: "sending" | "sent" | "failed",
+  ): void {
     this.state.transcript = this.state.transcript.map((item) =>
       item.id === id ? { ...item, status } : item,
     );
@@ -793,32 +1188,100 @@ export class SessionController {
   }
 
   private addTranscript(item: SessionViewState["transcript"][number]): void {
-    this.state.transcript = [...this.state.transcript, item];
+    this.state.transcript = trimTranscript([...this.state.transcript, item]);
     this.emit();
   }
 
-  private addSystem(text: string): void {
-    const recentSystems = this.state.transcript
-      .filter((item) => item.kind === "system")
-      .slice(-MAX_SYSTEM_ITEMS + 1);
+  private addSystem(text: string, severity: "info" | "error" = "info"): void {
+    const previous = this.state.transcript.at(-1);
+    if (
+      previous?.kind === "system" &&
+      previous.text === text &&
+      previous.severity === severity
+    ) {
+      return;
+    }
 
-    const nonSystems = this.state.transcript.filter(
-      (item) => item.kind !== "system",
-    );
-
-    const item: SessionViewState["transcript"][number] = {
-      id: makeId("sys"),
-      kind: "system",
-      from: "system",
-      text,
-      at: Date.now(),
-    };
-
-    this.state.transcript = [...nonSystems, ...recentSystems, item].sort(
-      (a, b) => a.at - b.at,
-    );
+    this.state.transcript = trimTranscript([
+      ...this.state.transcript,
+      {
+        id: makeId("sys"),
+        kind: "system",
+        from: "system",
+        text,
+        at: Date.now(),
+        severity,
+      },
+    ]);
 
     this.emit();
+  }
+
+  private validateRemoteVoiceStart(
+    message: Extract<AppMessage, { kind: "voice.start" }>,
+  ): void {
+    if (
+      message.streamId !== "voice" ||
+      message.frameMs !== this.profile.voice.frameMs ||
+      (message.mode !== undefined &&
+        message.mode !== this.profile.voice.mode) ||
+      message.sampleRate < 8_000 ||
+      message.sampleRate > 192_000
+    ) {
+      throw new Error("Invalid voice stream metadata");
+    }
+  }
+
+  private updateFilePauseForVoice(): void {
+    const shouldPause = this.isVoiceActive() || this.remoteVoiceActive;
+    this.sender.setGlobalPaused(shouldPause, "Paused during voice");
+    if (!shouldPause) this.startNextQueuedFileIfAllowed();
+  }
+
+  private createVoiceQueue<T>(): VoiceFreshnessQueue<T> {
+    return new VoiceFreshnessQueue<T>(
+      this.voiceQueueMaxFrames(),
+      this.profile.voice.maxQueuedLatencyMs,
+    );
+  }
+
+  private updateVoiceQueueLimits(): void {
+    const maxFrames = this.voiceQueueMaxFrames();
+    const outboundDropped = this.outboundVoice.setLimits(
+      maxFrames,
+      this.profile.voice.maxQueuedLatencyMs,
+    );
+    const inboundDropped = this.inboundVoice.setLimits(
+      maxFrames,
+      this.profile.voice.maxQueuedLatencyMs,
+    );
+    if (outboundDropped)
+      this.transport.recordVoiceDrop("before_encrypt", outboundDropped);
+    if (inboundDropped)
+      this.transport.recordVoiceDrop("before_decrypt", inboundDropped);
+  }
+
+  private voiceQueueMaxFrames(): number {
+    return Math.max(
+      1,
+      Math.ceil(
+        this.profile.voice.maxQueuedLatencyMs / this.profile.voice.frameMs,
+      ),
+    );
+  }
+
+  private clearOutboundVoiceQueue(): void {
+    this.voiceQueueEpoch += 1;
+    const dropped = this.outboundVoice.clear();
+    if (dropped) this.transport.recordVoiceDrop("before_encrypt", dropped);
+  }
+
+  private clearVoiceQueues(): void {
+    this.clearOutboundVoiceQueue();
+    const inboundDropped = this.inboundVoice.clear();
+    if (inboundDropped)
+      this.transport.recordVoiceDrop("before_decrypt", inboundDropped);
+    this.inboundVoiceScheduled = false;
   }
 
   private patch(patch: Partial<SessionViewState>): void {
@@ -846,6 +1309,18 @@ export class SessionController {
     this.cryptoSerial = run.catch(() => undefined);
     return run;
   }
+}
+
+function trimTranscript(
+  items: SessionViewState["transcript"],
+): SessionViewState["transcript"] {
+  return items.length <= MAX_TRANSCRIPT_ITEMS
+    ? items
+    : items.slice(items.length - MAX_TRANSCRIPT_ITEMS);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function mapSenderStatus(
