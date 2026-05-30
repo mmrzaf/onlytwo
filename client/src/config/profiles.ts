@@ -1,5 +1,9 @@
 export type LaneName = "control" | "text" | "file" | "voice";
-export type TransportProfileId = "balanced" | "low_data" | "voice_first" | "maximum_privacy";
+export type TransportProfileId =
+  | "balanced"
+  | "low_data"
+  | "voice_first"
+  | "maximum_privacy";
 export type VoicePrivacyMode = "efficient" | "maximum_privacy";
 export type VoiceCodec = "pcm16";
 
@@ -26,7 +30,12 @@ export interface TransportProfile {
     drainYieldMs: number;
   };
   lanes: Record<LaneName, LaneBudget>;
-  reconnect: { maxAttempts: number; baseDelayMs: number; maxDelayMs: number; jitterMs: number };
+  reconnect: {
+    maxAttempts: number;
+    baseDelayMs: number;
+    maxDelayMs: number;
+    jitterMs: number;
+  };
   files: {
     smallBytes: number;
     mediumBytes: number;
@@ -57,39 +66,67 @@ export interface TransportProfile {
 const KB = 1024;
 const MB = 1024 * KB;
 
-function cloneLaneBudgets(overrides: Partial<Record<LaneName, Partial<LaneBudget>>> = {}): Record<LaneName, LaneBudget> {
+function cloneLaneBudgets(
+  overrides: Partial<Record<LaneName, Partial<LaneBudget>>> = {},
+): Record<LaneName, LaneBudget> {
   const base: Record<LaneName, LaneBudget> = {
-    control: { priority: 100, maxPackets: 128, maxBytes: 2 * MB, dropPolicy: "fail" },
-    voice: { priority: 80, maxPackets: 12, maxBytes: 768 * KB, dropPolicy: "drop-oldest" },
-    text: { priority: 60, maxPackets: 256, maxBytes: 4 * MB, dropPolicy: "fail" },
-    file: { priority: 10, maxPackets: 16, maxBytes: 2 * MB, dropPolicy: "fail" }
+    control: {
+      priority: 100,
+      maxPackets: 128,
+      maxBytes: 2 * MB,
+      dropPolicy: "fail",
+    },
+    voice: {
+      priority: 80,
+      maxPackets: 12,
+      maxBytes: 768 * KB,
+      dropPolicy: "drop-oldest",
+    },
+    text: {
+      priority: 60,
+      maxPackets: 256,
+      maxBytes: 4 * MB,
+      dropPolicy: "fail",
+    },
+    file: {
+      priority: 10,
+      maxPackets: 16,
+      maxBytes: 2 * MB,
+      dropPolicy: "fail",
+    },
   };
 
   return {
     control: { ...base.control, ...overrides.control },
     voice: { ...base.voice, ...overrides.voice },
     text: { ...base.text, ...overrides.text },
-    file: { ...base.file, ...overrides.file }
+    file: { ...base.file, ...overrides.file },
   };
 }
 
-const COMMON_RECONNECT = { maxAttempts: 18, baseDelayMs: 450, maxDelayMs: 5000, jitterMs: 350 };
+const COMMON_RECONNECT = {
+  maxAttempts: 18,
+  baseDelayMs: 450,
+  maxDelayMs: 5000,
+  jitterMs: 350,
+};
 
 export const PROFILES: Record<TransportProfileId, TransportProfile> = {
   balanced: {
     id: "balanced",
     label: "Balanced",
-    description: "Default profile with conservative beta file limits, VAD voice, and bounded queues.",
+    description:
+      "Default profile with conservative beta file limits, VAD voice, and bounded queues.",
     protocolVersion: 2,
     maxFrameBytes: 256 * KB,
     paddingBuckets: [4 * KB, 16 * KB, 64 * KB, 128 * KB],
-    maxSkippedMessageKeys: 4096,
+    maxSkippedMessageKeys: 512,
     outbox: {
       maxPackets: 384,
       maxBytes: 16 * MB,
       maxBufferedAmountBytes: 2 * MB,
       resumeBufferedAmountBytes: 768 * KB,
-      drainYieldMs: 0
+      drainYieldMs: 0,
     },
     lanes: cloneLaneBudgets(),
     reconnect: COMMON_RECONNECT,
@@ -101,7 +138,7 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       chunkBytes: 32 * KB,
       windowChunks: 4,
       ackTimeoutMs: 12_000,
-      maxRetries: 8
+      maxRetries: 8,
     },
     voice: {
       enabled: true,
@@ -116,29 +153,35 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       vadPreRollMs: 120,
       vadHangoverMs: 250,
       vadMinSpeechMs: 60,
-      maxQueuedLatencyMs: 400
-    }
+      maxQueuedLatencyMs: 400,
+    },
   },
   low_data: {
     id: "low_data",
     label: "Low Data",
-    description: "Lower bandwidth profile with smaller files and smaller queues.",
+    description:
+      "Lower bandwidth profile with smaller files and smaller queues.",
     protocolVersion: 2,
     maxFrameBytes: 128 * KB,
     paddingBuckets: [4 * KB, 16 * KB, 64 * KB],
-    maxSkippedMessageKeys: 2048,
+    maxSkippedMessageKeys: 512,
     outbox: {
       maxPackets: 192,
       maxBytes: 8 * MB,
       maxBufferedAmountBytes: 1 * MB,
       resumeBufferedAmountBytes: 384 * KB,
-      drainYieldMs: 0
+      drainYieldMs: 0,
     },
     lanes: cloneLaneBudgets({
       voice: { maxPackets: 8, maxBytes: 384 * KB },
-      file: { maxPackets: 8, maxBytes: 1 * MB }
+      file: { maxPackets: 8, maxBytes: 1 * MB },
     }),
-    reconnect: { maxAttempts: 20, baseDelayMs: 600, maxDelayMs: 6000, jitterMs: 450 },
+    reconnect: {
+      maxAttempts: 20,
+      baseDelayMs: 600,
+      maxDelayMs: 6000,
+      jitterMs: 450,
+    },
     files: {
       smallBytes: 5 * MB,
       mediumBytes: 10 * MB,
@@ -147,7 +190,7 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       chunkBytes: 16 * KB,
       windowChunks: 2,
       ackTimeoutMs: 16_000,
-      maxRetries: 10
+      maxRetries: 10,
     },
     voice: {
       enabled: true,
@@ -162,29 +205,45 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       vadPreRollMs: 120,
       vadHangoverMs: 300,
       vadMinSpeechMs: 80,
-      maxQueuedLatencyMs: 500
-    }
+      maxQueuedLatencyMs: 500,
+    },
   },
   voice_first: {
     id: "voice_first",
     label: "Voice First",
-    description: "Prioritizes low-latency voice; file transfer is intentionally conservative during calls.",
+    description:
+      "Prioritizes low-latency voice; file transfer is intentionally conservative during calls.",
     protocolVersion: 2,
     maxFrameBytes: 256 * KB,
     paddingBuckets: [4 * KB, 16 * KB, 64 * KB],
-    maxSkippedMessageKeys: 4096,
+    maxSkippedMessageKeys: 512,
     outbox: {
       maxPackets: 256,
       maxBytes: 10 * MB,
       maxBufferedAmountBytes: 1536 * KB,
       resumeBufferedAmountBytes: 512 * KB,
-      drainYieldMs: 0
+      drainYieldMs: 0,
     },
     lanes: cloneLaneBudgets({
-      voice: { priority: 95, maxPackets: 10, maxBytes: 640 * KB, dropPolicy: "drop-oldest" },
-      file: { priority: 5, maxPackets: 8, maxBytes: 1 * MB, dropPolicy: "fail" }
+      voice: {
+        priority: 95,
+        maxPackets: 10,
+        maxBytes: 640 * KB,
+        dropPolicy: "drop-oldest",
+      },
+      file: {
+        priority: 5,
+        maxPackets: 8,
+        maxBytes: 1 * MB,
+        dropPolicy: "fail",
+      },
     }),
-    reconnect: { maxAttempts: 18, baseDelayMs: 350, maxDelayMs: 4000, jitterMs: 250 },
+    reconnect: {
+      maxAttempts: 18,
+      baseDelayMs: 350,
+      maxDelayMs: 4000,
+      jitterMs: 250,
+    },
     files: {
       smallBytes: 5 * MB,
       mediumBytes: 25 * MB,
@@ -193,7 +252,7 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       chunkBytes: 24 * KB,
       windowChunks: 2,
       ackTimeoutMs: 12_000,
-      maxRetries: 8
+      maxRetries: 8,
     },
     voice: {
       enabled: true,
@@ -208,29 +267,40 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       vadPreRollMs: 120,
       vadHangoverMs: 220,
       vadMinSpeechMs: 50,
-      maxQueuedLatencyMs: 250
-    }
+      maxQueuedLatencyMs: 250,
+    },
   },
   maximum_privacy: {
     id: "maximum_privacy",
     label: "Maximum Privacy",
-    description: "Higher bandwidth profile. Uses larger padding and constant-cadence voice.",
+    description:
+      "Higher bandwidth profile. Uses larger padding and constant-cadence voice.",
     protocolVersion: 2,
     maxFrameBytes: 256 * KB,
     paddingBuckets: [64 * KB, 128 * KB],
-    maxSkippedMessageKeys: 4096,
+    maxSkippedMessageKeys: 512,
     outbox: {
       maxPackets: 192,
       maxBytes: 24 * MB,
       maxBufferedAmountBytes: 2 * MB,
       resumeBufferedAmountBytes: 768 * KB,
-      drainYieldMs: 0
+      drainYieldMs: 0,
     },
     lanes: cloneLaneBudgets({
-      voice: { priority: 85, maxPackets: 16, maxBytes: 1 * MB, dropPolicy: "drop-oldest" },
-      file: { maxPackets: 8, maxBytes: 1 * MB }
+      voice: {
+        priority: 85,
+        maxPackets: 16,
+        maxBytes: 1 * MB,
+        dropPolicy: "drop-oldest",
+      },
+      file: { maxPackets: 8, maxBytes: 1 * MB },
     }),
-    reconnect: { maxAttempts: 18, baseDelayMs: 500, maxDelayMs: 5000, jitterMs: 400 },
+    reconnect: {
+      maxAttempts: 18,
+      baseDelayMs: 500,
+      maxDelayMs: 5000,
+      jitterMs: 400,
+    },
     files: {
       smallBytes: 5 * MB,
       mediumBytes: 10 * MB,
@@ -239,7 +309,7 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       chunkBytes: 24 * KB,
       windowChunks: 2,
       ackTimeoutMs: 16_000,
-      maxRetries: 10
+      maxRetries: 10,
     },
     voice: {
       enabled: true,
@@ -254,12 +324,21 @@ export const PROFILES: Record<TransportProfileId, TransportProfile> = {
       vadPreRollMs: 0,
       vadHangoverMs: 0,
       vadMinSpeechMs: 0,
-      maxQueuedLatencyMs: 500
-    }
-  }
+      maxQueuedLatencyMs: 500,
+    },
+  },
 };
 
 export const PROFILE_IDS = Object.keys(PROFILES) as TransportProfileId[];
+
+export function isTransportProfileId(
+  value: unknown,
+): value is TransportProfileId {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(PROFILES, value)
+  );
+}
 
 export function getProfile(id: TransportProfileId): TransportProfile {
   return PROFILES[id] ?? PROFILES.balanced;
@@ -276,21 +355,10 @@ export function profileHashInput(profile: TransportProfile): string {
     maxFrameBytes: profile.maxFrameBytes,
     paddingBuckets: profile.paddingBuckets,
     maxSkippedMessageKeys: profile.maxSkippedMessageKeys,
-    outbox: {
-      maxPackets: profile.outbox.maxPackets,
-      maxBytes: profile.outbox.maxBytes,
-      maxBufferedAmountBytes: profile.outbox.maxBufferedAmountBytes,
-      resumeBufferedAmountBytes: profile.outbox.resumeBufferedAmountBytes
-    },
-    files: {
-      maxFileBytes: profile.files.maxFileBytes,
-      chunkBytes: profile.files.chunkBytes,
-      windowChunks: profile.files.windowChunks
-    },
-    voice: {
-      mode: profile.voice.mode,
-      codec: profile.voice.codec,
-      frameMs: profile.voice.frameMs
-    }
+    outbox: profile.outbox,
+    lanes: profile.lanes,
+    reconnect: profile.reconnect,
+    files: profile.files,
+    voice: profile.voice,
   });
 }
