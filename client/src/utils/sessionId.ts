@@ -1,1 +1,1 @@
-export { generateRoomCode as generateSessionId, normalizeRoomCode } from "./ids";
+export { normalizeRoomCode } from "./ids";

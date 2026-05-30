@@ -8,7 +8,7 @@ export const NONCE_BYTES = 12;
 
 export enum OuterType {
   HANDSHAKE = 1,
-  DATA = 2
+  DATA = 2,
 }
 
 export interface AadContext {
@@ -26,17 +26,24 @@ export interface Envelope extends AadContext {
   lane: LaneName;
 }
 
-export function createAadContext(env: Pick<Envelope, "outerType" | "flags" | "streamId" | "sequence">, profile: TransportProfile): AadContext {
+export function createAadContext(
+  env: Pick<Envelope, "outerType" | "flags" | "streamId" | "sequence">,
+  profile: TransportProfile,
+): AadContext {
   return {
     protocolVersion: profile.protocolVersion,
     outerType: env.outerType,
     flags: env.flags,
     streamId: env.streamId,
-    sequence: env.sequence
+    sequence: env.sequence,
   };
 }
 
-export function encodeAad(context: AadContext, counter: bigint, nonce: Uint8Array): Uint8Array {
+export function encodeAad(
+  context: AadContext,
+  counter: bigint,
+  nonce: Uint8Array,
+): Uint8Array {
   if (nonce.byteLength !== NONCE_BYTES) throw new Error("Invalid nonce length");
   const out = new Uint8Array(AAD_BYTES);
   const view = new DataView(out.buffer);
@@ -53,13 +60,20 @@ export function encodeAad(context: AadContext, counter: bigint, nonce: Uint8Arra
   return out;
 }
 
-export function packEnvelope(env: Envelope, profile: TransportProfile): Uint8Array {
-  if (env.nonce.byteLength !== NONCE_BYTES) throw new Error("Invalid nonce length");
-  if (env.protocolVersion !== profile.protocolVersion) throw new Error("Protocol/profile mismatch");
-  if (env.outerType !== OuterType.HANDSHAKE && env.outerType !== OuterType.DATA) throw new Error("Invalid envelope type");
+export function packEnvelope(
+  env: Envelope,
+  profile: TransportProfile,
+): Uint8Array {
+  if (env.nonce.byteLength !== NONCE_BYTES)
+    throw new Error("Invalid nonce length");
+  if (env.protocolVersion !== profile.protocolVersion)
+    throw new Error("Protocol/profile mismatch");
+  if (env.outerType !== OuterType.HANDSHAKE && env.outerType !== OuterType.DATA)
+    throw new Error("Invalid envelope type");
 
   const total = HEADER_BYTES + env.payload.byteLength;
-  if (total > profile.maxFrameBytes) throw new Error(`Frame too large: ${total} > ${profile.maxFrameBytes}`);
+  if (total > profile.maxFrameBytes)
+    throw new Error(`Frame too large: ${total} > ${profile.maxFrameBytes}`);
 
   const out = new Uint8Array(total);
   const view = new DataView(out.buffer);
@@ -78,28 +92,37 @@ export function packEnvelope(env: Envelope, profile: TransportProfile): Uint8Arr
   return out;
 }
 
-export function unpackEnvelope(buffer: ArrayBuffer, profile: TransportProfile): Envelope {
+export function unpackEnvelope(
+  buffer: ArrayBuffer,
+  profile: TransportProfile,
+): Envelope {
   if (buffer.byteLength < HEADER_BYTES) throw new Error("Frame too small");
-  if (buffer.byteLength > profile.maxFrameBytes) throw new Error("Frame too large");
+  if (buffer.byteLength > profile.maxFrameBytes)
+    throw new Error("Frame too large");
 
   const bytes = new Uint8Array(buffer);
   const view = new DataView(buffer);
-  if (view.getUint8(0) !== MAGIC_A || view.getUint8(1) !== MAGIC_B) throw new Error("Invalid frame magic");
+  if (view.getUint8(0) !== MAGIC_A || view.getUint8(1) !== MAGIC_B)
+    throw new Error("Invalid frame magic");
 
   const protocolVersion = view.getUint8(2);
-  if (protocolVersion !== profile.protocolVersion) throw new Error(`Unsupported protocol version: ${protocolVersion}`);
+  if (protocolVersion !== profile.protocolVersion)
+    throw new Error(`Unsupported protocol version: ${protocolVersion}`);
 
   const outerType = view.getUint8(3);
-  if (outerType !== OuterType.HANDSHAKE && outerType !== OuterType.DATA) throw new Error("Unknown frame type");
+  if (outerType !== OuterType.HANDSHAKE && outerType !== OuterType.DATA)
+    throw new Error("Unknown frame type");
 
   const flags = view.getUint8(4);
   if (flags !== 0) throw new Error("Reserved frame flags set");
 
   const headerLen = view.getUint8(5);
-  if (headerLen !== HEADER_BYTES) throw new Error("Invalid frame header length");
+  if (headerLen !== HEADER_BYTES)
+    throw new Error("Invalid frame header length");
 
   const payloadLen = view.getUint32(34, false);
-  if (payloadLen + HEADER_BYTES !== buffer.byteLength) throw new Error("Invalid frame payload length");
+  if (payloadLen + HEADER_BYTES !== buffer.byteLength)
+    throw new Error("Invalid frame payload length");
 
   return {
     protocolVersion,
@@ -110,6 +133,6 @@ export function unpackEnvelope(buffer: ArrayBuffer, profile: TransportProfile): 
     counter: view.getBigUint64(14, false),
     nonce: bytes.slice(22, 34),
     payload: bytes.slice(HEADER_BYTES),
-    lane: outerType === OuterType.HANDSHAKE ? "control" : "text"
+    lane: outerType === OuterType.HANDSHAKE ? "control" : "text",
   };
 }
