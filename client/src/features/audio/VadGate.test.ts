@@ -19,7 +19,7 @@ describe("VadGate", () => {
       stopDb: -52,
       preRollFrames: 2,
       hangoverFrames: 2,
-      minSpeechFrames: 1
+      minSpeechFrames: 1,
     });
 
     const decision = vad.process(frame(0.0001));
@@ -34,7 +34,7 @@ describe("VadGate", () => {
       stopDb: -52,
       preRollFrames: 2,
       hangoverFrames: 2,
-      minSpeechFrames: 1
+      minSpeechFrames: 1,
     });
 
     vad.process(frame(0.0001));
@@ -54,7 +54,7 @@ describe("VadGate", () => {
       stopDb: -52,
       preRollFrames: 0,
       hangoverFrames: 2,
-      minSpeechFrames: 1
+      minSpeechFrames: 1,
     });
 
     expect(vad.process(frame(0.1)).send).toBe(true);
@@ -73,7 +73,7 @@ describe("VadGate", () => {
       stopDb: -52,
       preRollFrames: 2,
       hangoverFrames: 2,
-      minSpeechFrames: 1
+      minSpeechFrames: 1,
     });
 
     const decision = vad.process(frame(0));

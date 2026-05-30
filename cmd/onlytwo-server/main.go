@@ -26,9 +26,13 @@ func main() {
 	}
 
 	registry := session.NewRegistry(cfg.SessionTTL)
+	cleanupStop := make(chan struct{})
+	defer close(cleanupStop)
+	go registry.CleanupExpired(time.Minute, cleanupStop)
 
 	hub := ws.NewHub(registry, ws.Config{
 		AllowedOrigins:      cfg.AllowedOrigins,
+		TrustedProxies:      cfg.TrustedProxies,
 		MaxMessageSize:      cfg.MaxFrameBytes,
 		SendBufferSize:      cfg.SendBufferSize,
 		WriteWait:           cfg.WriteWait,

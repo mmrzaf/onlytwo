@@ -1,11 +1,31 @@
 import type { TransportProfileId } from "../config/profiles";
 import type { ConnectionStatus } from "../transport/WebSocketConnection";
 
-export type Phase = "idle" | "creating" | "joining" | "waiting" | "active" | "ended" | "failed";
-export type SecurityState = "none" | "encrypted_unverified" | "verified" | "verification_failed";
+export type Phase =
+  | "idle"
+  | "creating"
+  | "joining"
+  | "waiting"
+  | "active"
+  | "ended"
+  | "failed";
+export type SecurityState =
+  | "none"
+  | "encrypted_unverified"
+  | "verified"
+  | "verification_failed";
 export type VoiceState = "idle" | "starting" | "active" | "muted" | "failed";
 export type TransferDirection = "send" | "receive";
-export type TransferState = "queued" | "offered" | "waiting" | "sending" | "receiving" | "paused" | "completed" | "cancelled" | "failed";
+export type TransferState =
+  | "queued"
+  | "offered"
+  | "waiting"
+  | "sending"
+  | "receiving"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
 
 export interface TranscriptItem {
   id: string;
@@ -14,6 +34,7 @@ export interface TranscriptItem {
   text: string;
   at: number;
   status?: "sending" | "sent" | "failed";
+  severity?: "info" | "error";
   fileId?: string;
 }
 
@@ -38,6 +59,7 @@ export interface SessionViewState {
   notice: string | null;
   voice: VoiceState;
   muted: boolean;
+  audioPlaybackBlocked: boolean;
   invalidPackets: number;
   transcript: TranscriptItem[];
   transfers: TransferView[];

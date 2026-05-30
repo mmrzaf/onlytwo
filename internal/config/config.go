@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Addr                  string
 	AllowedOrigins        []string
+	TrustedProxies        []string
 	SessionTTL            time.Duration
 	MaxFrameBytes         int64
 	SendBufferSize        int
@@ -25,6 +26,7 @@ func FromEnv() Config {
 	return Config{
 		Addr:                envString("ONLYTWO_ADDR", ":8080"),
 		AllowedOrigins:      envList("ONLYTWO_ALLOWED_ORIGINS", nil),
+		TrustedProxies:      envList("ONLYTWO_TRUSTED_PROXIES", nil),
 		SessionTTL:          time.Duration(envInt("ONLYTWO_SESSION_TTL_SECONDS", 3600)) * time.Second,
 		MaxFrameBytes:       int64(envInt("ONLYTWO_MAX_FRAME_BYTES", 256*1024)),
 		SendBufferSize:      envInt("ONLYTWO_SEND_BUFFER_SIZE", 128),

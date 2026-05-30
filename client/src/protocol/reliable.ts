@@ -1,5 +1,10 @@
 import type { LaneName } from "../config/profiles";
-import type { AppMessage, ReliableBodyMessage, ReliableChannelName, ReliableEnvelopeMessage } from "./appMessages";
+import type {
+  AppMessage,
+  ReliableBodyMessage,
+  ReliableChannelName,
+  ReliableEnvelopeMessage,
+} from "./appMessages";
 import { isReliableBody } from "./appMessages";
 
 export interface ReliablePolicy {
@@ -27,7 +32,11 @@ export interface ReliablePendingSnapshot {
 export interface ReliableChannelCallbacks {
   send: (message: AppMessage, lane: LaneName) => Promise<boolean>;
   onDelivered?: (reliableId: string, trackingId?: string) => void;
-  onFailed?: (reliableId: string, trackingId: string | undefined, reason: string) => void;
+  onFailed?: (
+    reliableId: string,
+    trackingId: string | undefined,
+    reason: string,
+  ) => void;
   onDuplicate?: (reliableId: string) => void;
 }
 
@@ -48,14 +57,23 @@ const DEFAULT_POLICY: ReliablePolicy = {
   backoffFactor: 2,
   maxAttempts: 5,
   jitterRatio: 0.2,
-  seenTtlMs: 10 * 60 * 1000
+  seenTtlMs: 10 * 60 * 1000,
 };
 
-export function isReliableEnvelope(message: AppMessage): message is ReliableEnvelopeMessage {
-  return message.kind === "reliable.msg" || message.kind === "reliable.ack" || message.kind === "reliable.nack";
+export function isReliableEnvelope(
+  message: AppMessage,
+): message is ReliableEnvelopeMessage {
+  return (
+    message.kind === "reliable.msg" ||
+    message.kind === "reliable.ack" ||
+    message.kind === "reliable.nack"
+  );
 }
 
-export function shouldSendReliably(message: AppMessage, lane: LaneName): message is ReliableBodyMessage {
+export function shouldSendReliably(
+  message: AppMessage,
+  lane: LaneName,
+): message is ReliableBodyMessage {
   if (isReliableEnvelope(message)) return false;
   if (!isReliableBody(message)) return false;
   return lane === "control" || lane === "text";
@@ -66,11 +84,18 @@ export class ReliableChannel {
   private seen = new Map<string, number>();
   private policy: ReliablePolicy;
 
-  constructor(private callbacks: ReliableChannelCallbacks, policy: Partial<ReliablePolicy> = {}) {
+  constructor(
+    private callbacks: ReliableChannelCallbacks,
+    policy: Partial<ReliablePolicy> = {},
+  ) {
     this.policy = { ...DEFAULT_POLICY, ...policy };
   }
 
-  async send(body: ReliableBodyMessage, channel: ReliableChannelName, options: ReliableSendOptions = {}): Promise<boolean> {
+  async send(
+    body: ReliableBodyMessage,
+    channel: ReliableChannelName,
+    options: ReliableSendOptions = {},
+  ): Promise<boolean> {
     const id = crypto.randomUUID();
     const now = Date.now();
     const pending: PendingReliable = {
@@ -81,14 +106,16 @@ export class ReliableChannel {
       attempts: 0,
       createdAt: now,
       lastSentAt: 0,
-      timer: null
+      timer: null,
     };
 
     this.pending.set(id, pending);
     return this.sendPending(pending);
   }
 
-  async receive(message: ReliableEnvelopeMessage): Promise<ReliableBodyMessage | null> {
+  async receive(
+    message: ReliableEnvelopeMessage,
+  ): Promise<ReliableBodyMessage | null> {
     this.sweepSeen();
 
     switch (message.kind) {
@@ -103,11 +130,18 @@ export class ReliableChannel {
         const pending = this.pending.get(message.id);
         if (!pending) return null;
         this.clearPending(pending);
-        this.callbacks.onFailed?.(message.id, pending.trackingId, message.reason);
+        this.callbacks.onFailed?.(
+          message.id,
+          pending.trackingId,
+          message.reason,
+        );
         return null;
       }
       case "reliable.msg": {
-        await this.callbacks.send({ kind: "reliable.ack", id: message.id }, "control");
+        await this.callbacks.send(
+          { kind: "reliable.ack", id: message.id },
+          "control",
+        );
 
         if (this.seen.has(message.id)) {
           this.callbacks.onDuplicate?.(message.id);
@@ -142,7 +176,7 @@ export class ReliableChannel {
       attempts: item.attempts,
       channel: item.channel,
       createdAt: item.createdAt,
-      lastSentAt: item.lastSentAt
+      lastSentAt: item.lastSentAt,
     }));
   }
 
@@ -156,14 +190,17 @@ export class ReliableChannel {
     pending.attempts += 1;
     pending.lastSentAt = Date.now();
 
-    const ok = await this.callbacks.send({
-      kind: "reliable.msg",
-      id: pending.id,
-      channel: pending.channel,
-      body: pending.body,
-      createdAt: pending.createdAt,
-      attempt: pending.attempts
-    }, pending.channel);
+    const ok = await this.callbacks.send(
+      {
+        kind: "reliable.msg",
+        id: pending.id,
+        channel: pending.channel,
+        body: pending.body,
+        createdAt: pending.createdAt,
+        attempt: pending.attempts,
+      },
+      pending.channel,
+    );
 
     if (!ok) {
       this.failPending(pending, "Message could not be queued for transport");
@@ -193,8 +230,9 @@ export class ReliableChannel {
 
   private retryDelayMs(attempts: number): number {
     const base = Math.min(
-      this.policy.initialRetryMs * this.policy.backoffFactor ** Math.max(0, attempts - 1),
-      this.policy.maxRetryMs
+      this.policy.initialRetryMs *
+        this.policy.backoffFactor ** Math.max(0, attempts - 1),
+      this.policy.maxRetryMs,
     );
     const jitter = base * this.policy.jitterRatio;
     return Math.max(1, Math.round(base - jitter + Math.random() * jitter * 2));

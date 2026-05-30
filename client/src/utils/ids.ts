@@ -1,15 +1,5 @@
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
 export function makeId(prefix = "id"): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 18)}`;
-}
-
-export function generateRoomCode(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  let raw = "";
-  for (const b of bytes) raw += CODE_ALPHABET[b % CODE_ALPHABET.length];
-  return `${raw.slice(0, 4)}-${raw.slice(4)}`;
 }
 
 export function normalizeRoomCode(value: string): string {

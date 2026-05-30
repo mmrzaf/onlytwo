@@ -6,7 +6,9 @@ services:
     expose:
       - "8080"
     environment:
-      - ONLYTWO_PORT=8080
+      - ONLYTWO_ADDR=:8080
+      - ONLYTWO_ALLOWED_ORIGINS=https://${ONLYTWO_DOMAIN:?ONLYTWO_DOMAIN missing}
+      - ONLYTWO_TRUSTED_PROXIES=${ONLYTWO_TRUSTED_PROXIES:-}
     networks:
       - onlytwo-net
       - proxy

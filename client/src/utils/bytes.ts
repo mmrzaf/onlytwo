@@ -6,7 +6,6 @@ export function utf8Decode(value: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(value);
 }
 
-
 export function bufferFromBytes(bytes: Uint8Array): ArrayBuffer {
   const out = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(out).set(bytes);
@@ -34,7 +33,9 @@ export function bytesToHex(bytes: Uint8Array): string {
 }
 
 export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", bufferFromBytes(bytes)));
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bufferFromBytes(bytes)),
+  );
 }
 
 export function bytesToBase64Url(bytes: Uint8Array): string {
@@ -43,7 +44,10 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.byteLength; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 export function base64UrlToBytes(value: string): Uint8Array {

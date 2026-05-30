@@ -39,12 +39,19 @@ export class VadGate {
     const levelDb = rmsDb(frame);
 
     if (!this.config.enabled) {
-      return { send: true, started: false, stopped: false, levelDb, frames: [frame] };
+      return {
+        send: true,
+        started: false,
+        stopped: false,
+        levelDb,
+        frames: [frame],
+      };
     }
 
     if (!this.speaking) {
       this.preRoll.push(frame);
-      while (this.preRoll.length > this.config.preRollFrames) this.preRoll.shift();
+      while (this.preRoll.length > this.config.preRollFrames)
+        this.preRoll.shift();
 
       if (levelDb >= this.config.startDb) {
         this.aboveStartFrames += 1;
@@ -61,17 +68,35 @@ export class VadGate {
         return { send: true, started: true, stopped: false, levelDb, frames };
       }
 
-      return { send: false, started: false, stopped: false, levelDb, frames: [] };
+      return {
+        send: false,
+        started: false,
+        stopped: false,
+        levelDb,
+        frames: [],
+      };
     }
 
     if (levelDb >= this.config.stopDb) {
       this.hangoverRemaining = this.config.hangoverFrames;
-      return { send: true, started: false, stopped: false, levelDb, frames: [frame] };
+      return {
+        send: true,
+        started: false,
+        stopped: false,
+        levelDb,
+        frames: [frame],
+      };
     }
 
     if (this.hangoverRemaining > 0) {
       this.hangoverRemaining -= 1;
-      return { send: true, started: false, stopped: false, levelDb, frames: [frame] };
+      return {
+        send: true,
+        started: false,
+        stopped: false,
+        levelDb,
+        frames: [frame],
+      };
     }
 
     this.speaking = false;

@@ -15,7 +15,40 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Test server
+        run: |
+          go test ./...
+          go vet ./...
+          go test -race ./internal/session ./internal/http ./internal/ws
+
+      - name: Test and build client
+        working-directory: client
+        run: |
+          npm ci
+          npm test -- --run
+          npm run build
+
   build-binaries:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -99,10 +132,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

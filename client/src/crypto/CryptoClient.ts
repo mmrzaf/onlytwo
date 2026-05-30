@@ -24,9 +24,16 @@ export class CryptoClient {
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor() {
-    this.worker = new Worker(new URL("./cryptoWorker.ts", import.meta.url), { type: "module" });
+    this.worker = new Worker(new URL("./cryptoWorker.ts", import.meta.url), {
+      type: "module",
+    });
     this.worker.onmessage = (event: MessageEvent) => {
-      const msg = event.data as { type?: string; id?: string; result?: unknown; error?: string };
+      const msg = event.data as {
+        type?: string;
+        id?: string;
+        result?: unknown;
+        error?: string;
+      };
       if (msg.type === "READY") {
         this.ready = true;
         for (const waiter of this.readyWaiters.splice(0)) waiter();
@@ -54,7 +61,7 @@ export class CryptoClient {
     return this.serialRequest("CONFIGURE", {
       paddingBuckets: profile.paddingBuckets,
       maxSkippedMessageKeys: profile.maxSkippedMessageKeys,
-      protocolVersion: profile.protocolVersion
+      protocolVersion: profile.protocolVersion,
     });
   }
 
@@ -62,17 +69,47 @@ export class CryptoClient {
     return this.serialRequest("GENERATE_IDENTITY");
   }
 
-  establishSession(peerPublicKey: Uint8Array, profileHashValue: string): Promise<boolean> {
-    return this.serialRequest("ESTABLISH_SESSION", { peerPublicKey, profileHashValue });
+  establishSession(
+    peerPublicKey: Uint8Array,
+    profileHashValue: string,
+  ): Promise<boolean> {
+    return this.serialRequest("ESTABLISH_SESSION", {
+      peerPublicKey,
+      profileHashValue,
+    });
   }
 
-  async encrypt(data: Uint8Array, aadContext: AadContext): Promise<EncryptedPayload> {
-    const result = await this.serialRequest<{ ciphertext: Uint8Array; nonce: Uint8Array; counter: string | bigint }>("ENCRYPT", { data, aadContext });
-    return { ciphertext: result.ciphertext, nonce: result.nonce, counter: typeof result.counter === "bigint" ? result.counter : BigInt(result.counter) };
+  async encrypt(
+    data: Uint8Array,
+    aadContext: AadContext,
+  ): Promise<EncryptedPayload> {
+    const result = await this.serialRequest<{
+      ciphertext: Uint8Array;
+      nonce: Uint8Array;
+      counter: string | bigint;
+    }>("ENCRYPT", { data, aadContext });
+    return {
+      ciphertext: result.ciphertext,
+      nonce: result.nonce,
+      counter:
+        typeof result.counter === "bigint"
+          ? result.counter
+          : BigInt(result.counter),
+    };
   }
 
-  decrypt(ciphertext: Uint8Array, nonce: Uint8Array, counter: bigint, aadContext: AadContext): Promise<Uint8Array> {
-    return this.serialRequest("DECRYPT", { ciphertext, nonce, counter: counter.toString(), aadContext });
+  decrypt(
+    ciphertext: Uint8Array,
+    nonce: Uint8Array,
+    counter: bigint,
+    aadContext: AadContext,
+  ): Promise<Uint8Array> {
+    return this.serialRequest("DECRYPT", {
+      ciphertext,
+      nonce,
+      counter: counter.toString(),
+      aadContext,
+    });
   }
 
   reset(): Promise<boolean> {
@@ -89,7 +126,10 @@ export class CryptoClient {
   private async waitReady(): Promise<void> {
     if (this.ready) return;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Crypto worker ready timeout")), READY_TIMEOUT_MS);
+      const timer = setTimeout(
+        () => reject(new Error("Crypto worker ready timeout")),
+        READY_TIMEOUT_MS,
+      );
       this.readyWaiters.push(() => {
         clearTimeout(timer);
         resolve();
@@ -105,7 +145,11 @@ export class CryptoClient {
         this.pending.delete(id);
         reject(new Error(`Crypto operation timed out: ${type}`));
       }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { timer, resolve: (value) => resolve(value as T), reject });
+      this.pending.set(id, {
+        timer,
+        resolve: (value) => resolve(value as T),
+        reject,
+      });
       this.worker.postMessage({ id, type, payload });
     });
   }

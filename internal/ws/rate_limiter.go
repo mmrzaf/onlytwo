@@ -11,13 +11,14 @@ type rateWindow struct {
 }
 
 type RateLimiter struct {
-	mu      sync.Mutex
-	limit   int
-	windows map[string]rateWindow
+	mu        sync.Mutex
+	limit     int
+	windows   map[string]rateWindow
+	lastSweep time.Time
 }
 
 func NewRateLimiter(limitPerMinute int) *RateLimiter {
-	return &RateLimiter{limit: limitPerMinute, windows: make(map[string]rateWindow)}
+	return &RateLimiter{limit: limitPerMinute, windows: make(map[string]rateWindow), lastSweep: time.Now()}
 }
 
 func (r *RateLimiter) Allow(key string) bool {
@@ -27,6 +28,7 @@ func (r *RateLimiter) Allow(key string) bool {
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.sweepLocked(now)
 	w := r.windows[key]
 	if w.startedAt.IsZero() || now.Sub(w.startedAt) >= time.Minute {
 		r.windows[key] = rateWindow{count: 1, startedAt: now}
@@ -41,12 +43,21 @@ func (r *RateLimiter) Allow(key string) bool {
 }
 
 func (r *RateLimiter) Sweep() {
-	cutoff := time.Now().Add(-2 * time.Minute)
+	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.sweepLocked(now)
+}
+
+func (r *RateLimiter) sweepLocked(now time.Time) {
+	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < time.Minute {
+		return
+	}
+	cutoff := now.Add(-2 * time.Minute)
 	for key, w := range r.windows {
 		if w.startedAt.Before(cutoff) {
 			delete(r.windows, key)
 		}
 	}
+	r.lastSweep = now
 }

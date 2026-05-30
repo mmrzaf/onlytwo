@@ -10,7 +10,8 @@ export class JitterBuffer<T extends { seq: number }> {
     while (this.frames.size > this.maxFrames) {
       const oldest = Math.min(...this.frames.keys());
       this.frames.delete(oldest);
-      if (this.expected !== null && oldest === this.expected) this.expected += 1;
+      if (this.expected !== null && oldest === this.expected)
+        this.expected += 1;
     }
   }
 
@@ -38,5 +39,7 @@ export class JitterBuffer<T extends { seq: number }> {
     this.expected = null;
   }
 
-  get size(): number { return this.frames.size; }
+  get size(): number {
+    return this.frames.size;
+  }
 }
